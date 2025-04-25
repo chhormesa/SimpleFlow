@@ -45,72 +45,55 @@ Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'
 
 class DataSaver:
     def __init__(self, base_dir= r"C:\Users\khrti\OneDrive\ドキュメント\Project\Sumo\Mimic\results" , model_path = None):
-        """
-        Parameters:
-        - base_dir: 基本となるディレクトリ名
-        - model_path: モデルの基本名 (例: trained_model_4)
-        """
         self.base_dir = base_dir
         self.model_path = model_path if model_path is not None else ""
         
-        # 基本ディレクトリの作成
         if not os.path.exists(base_dir):
             os.makedirs(base_dir)
         
-        # モデル名のフォルダが既に存在するかチェック
         model_dir = os.path.join(self.base_dir, self.model_path)
         if os.path.exists(model_dir):
-            # 同名のフォルダが存在する場合、新しい番号のフォルダを作成
             self.output_dir = self._create_next_subfolder()
         else:
-            # 存在しない場合、そのままのモデル名でフォルダを作成
             self.output_dir = model_dir
             os.makedirs(self.output_dir)
         
     def _create_next_subfolder(self):
-        """同名のモデルが存在する場合、番号を増やしてAttentionを付加"""
-        base_name = self.model_path[:-1]  # 'trained_GANmodel_' を取得
-        current_num = int(self.model_path[-1])  # 現在の番号を取得
+        base_name = self.model_path[:-1] 
+        current_num = int(self.model_path[-1])  
         next_num = current_num + 1
         folder_name = f"{base_name}{next_num}_Attention"
         
-        # 新しいフォルダのパスを作成
         output_dir = os.path.join(self.base_dir, folder_name)
         os.makedirs(output_dir)
         return output_dir
     
     def save_config(self, config, model_number):
-        """設定情報をテキストファイルとして保存"""
         config_filename = f"model_{model_number}_config.txt"
         config_path = os.path.join(self.output_dir, config_filename)
         
         with open(config_path, 'w') as f:
-            # 実行ファイル名の取得と書き込み
             import sys
-            script_name = sys.argv[0]  # 実行中のスクリプトのファイル名
+            script_name = sys.argv[0]
 
             f.write(f"Configuration for Model {model_number}\n")
             f.write("="*50 + "\n\n")
 
-            # 実行ファイル名を追加
             f.write("Execution Information:\n")
             f.write("-"*20 + "\n")
             f.write(f"Script filename: {script_name}\n\n")
             
-            # 基本設定の書き込み
             f.write("Basic Configuration:\n")
             f.write("-"*20 + "\n")
             for key, value in config.items():
-                if key != 'NETWORK':  # NETWORKは後で別途書き込む
+                if key != 'NETWORK': 
                     f.write(f"{key}: {value}\n")
-            
-            # ネットワーク構造の詳細を書き込み
+
             if hasattr(self, 'network_structure'):
                 f.write("\nNeural Network Architecture:\n")
                 f.write("-"*20 + "\n")
                 f.write(self.network_structure)
             
-            # 追加の説明や注釈
             f.write("\nNotes:\n")
             f.write("-"*20 + "\n")
             f.write("- DISTRIBUTION_TYPE: 'uniform' means constant inflow, 'poisson' means random inflow\n")
@@ -122,26 +105,21 @@ class DataSaver:
             f.write("- BATCH_SIZE: Number of samples used for each training step\n")
             f.write("- CAPACITY: Size of the replay memory buffer\n")
             
-            # 実行日時も記録
             from datetime import datetime
             f.write(f"\nConfiguration saved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     def update_network_structure(self, model):
-        """ネットワーク構造の文字列を保存"""
         import io
-        # 標準出力をキャプチャ
         output = io.StringIO()
         print(model, file=output)
         structure = output.getvalue()
         
-        # より読みやすい形式に整形
         self.network_structure = (
             "Network Structure:\n"
             f"{structure}\n"
             "\nLayer Details:\n"
         )
         
-        # 各層のパラメータ数を計算
         total_params = 0
         for name, param in model.named_parameters():
             param_count = param.numel()
@@ -151,7 +129,6 @@ class DataSaver:
         self.network_structure += f"\nTotal Parameters: {total_params:,}"
 
     def save_plot(self, fig, filename):
-        """プロットを画像として保存"""
         save_filename = f"{self.model_path}_{filename}"
         
         path = os.path.join(self.output_dir, f"{save_filename}.png")
@@ -160,7 +137,6 @@ class DataSaver:
         print(f"saved plot as: {path}")
 
     def save_data(self, data, filename):
-        """データをCSVとして保存"""
         save_filename = f"{self.model_path}_{filename}"
         
         path = os.path.join(self.output_dir, f"{save_filename}.csv")
@@ -171,7 +147,6 @@ class DataSaver:
         print(f"saved data as: {path}")
 
     def save_model(self, model, filename):
-        """モデルの保存"""
         save_filename = f"{self.model_path}_{filename}"
         
         path = os.path.join(self.output_dir, f"{save_filename}.pth")
@@ -179,147 +154,147 @@ class DataSaver:
         print(f"saved model as: {path}")
 
 
-# ミニバッチ学習を実現するために、経験を保存するメモリクラス
+# Class for replay memory to enable mini-batch learning
 class ReplayMemory:
     def __init__(self, CAPACITY):
-        self.capacity = CAPACITY # メモリの最大長さ
-        self.memory = [] # 経験を保存する変数
-        self.index = 0 # 保存するindexを示す変数
+        self.capacity = CAPACITY  # Maximum length of the memory
+        self.memory = []          # Variable to store experiences
+        self.index = 0            # Index indicating where to save the next experience
 
     def push(self, state, action, state_next, reward):
-        ''' transitionをメモリに保存する '''
+        ''' Save a transition into memory '''
         if len(self.memory) < self.capacity:
-            self.memory.append(None) # メモリが満タンでないときは足す
+            self.memory.append(None)  # If memory is not full, append a new slot
         self.memory[self.index] = Transition(state, action, state_next, reward)
-        self.index = (self.index + 1) % self.capacity # 保存するindexを1つずらす
+        self.index = (self.index + 1) % self.capacity  # Move the save index forward by one
 
     def sample(self, batch_size):
-        ''' batch_size分だけランダムに保存内容を取り出す '''
+        ''' Randomly retrieve a batch of experiences '''
         return random.sample(self.memory, batch_size)
 
     def __len__(self):
-        ''' 関数lenに対して、現在の変数memoryの長さを返す'''
+        ''' Return the current length of the memory '''
         return len(self.memory)
 
 
 class Net(nn.Module):
-    def __init__(self, n_in, n_mid1, n_mid2, n_mid3, n_mid4,  n_out, dropout_rate=0.2):
+    def __init__(self, n_in, n_mid1, n_mid2, n_mid3, n_mid4, n_out, dropout_rate=0.2):
         super().__init__()
         self.fc1 = nn.Linear(n_in, n_mid1)
         self.fc2 = nn.Linear(n_mid1, n_mid2)
         self.fc3 = nn.Linear(n_mid2, n_mid3)
         self.fc4 = nn.Linear(n_mid3, n_mid4)
+        
         # Dueling Network
-        self.fc5_adv = nn.Linear(n_mid4, n_out)  # Advantage側
-        self.fc5_v = nn.Linear(n_mid4, 1)  # 価値V側
+        self.fc5_adv = nn.Linear(n_mid4, n_out)  # Advantage stream
+        self.fc5_v = nn.Linear(n_mid4, 1)        # Value stream
 
-        # Dropout層の追加
+        # Optional dropout layer
         # self.dropout = nn.Dropout(p=dropout_rate)
 
-    def forward(self, x):   # dropoutを使用しない
+    def forward(self, x):   # Not using dropout
         h1 = F.relu(self.fc1(x))
         h2 = F.relu(self.fc2(h1))
         h3 = F.relu(self.fc3(h2))
         h4 = F.relu(self.fc4(h3))
 
-        adv = self.fc5_adv(h4)  # この出力はReLUしない
-        val = self.fc5_v(h4).expand(-1, adv.size(1))  # この出力はReLUしない
+        adv = self.fc5_adv(h4)  # No ReLU for advantage output
+        val = self.fc5_v(h4).expand(-1, adv.size(1))  # No ReLU for value output
 
         output = val + adv - adv.mean(1, keepdim=True).expand(-1, adv.size(1))
 
         return output
     
-# DQNエージェントの脳となるクラス
+# Class that serves as the brain of the DQN agent
 class Brain:
     def __init__(self, num_states, num_actions, config):
-        self.num_actions = num_actions # 行動数を取得
+        self.num_actions = num_actions # Get the number of actions
         self.config = config
-        self.memory = ReplayMemory(self.config['CAPACITY']) # 経験を記憶するメモリオブジェクトを生成
+        self.memory = ReplayMemory(self.config['CAPACITY'])  # Create a memory object to store experiences
 
-        # Dueling DQN アーキテクチャ
+        # Dueling DQN architecture
         self.model = Net(num_states, 128, 128, 64, 64, num_actions)
-        print(self.model)                       # 上記のネットワークモデル設定内容を出力
-        # 最適化手法の設定 (今回はadam、学習率は0.0001)
+        print(self.model)                       # Output the model structure
+        # Optimizer setting (using Adam with a learning rate of 0.0001)
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
 
-
     def replay(self):
-        '''Experience Replayでネットワークの結合パラメータを学習'''
+        '''Learn the neural network parameters using Experience Replay'''
 
-        # 1. メモリのサイズ確認(メモリサイズがミニバッチより小さい間は何もしない)
+        # 1. Check if memory is large enough (do nothing if memory size is smaller than mini-batch size)
         if len(self.memory) < self.config['BATCH_SIZE']:
             return
 
-        # 2. ミニバッチ作成
+        # 2. Create a mini-batch
         transitions = self.memory.sample(self.config['BATCH_SIZE'])
-        batch = Transition(*zip(*transitions)) # Numpy型からTorch.Tensor型へ変換
+        batch = Transition(*zip(*transitions)) # Convert from Numpy to Torch.Tensor
         
-        state_batch = torch.cat(batch.state) # テンソルサイズの変換
+        state_batch = torch.cat(batch.state) # Reshape tensors
         action_batch = torch.cat(batch.action)
         reward_batch = torch.cat(batch.reward)
         non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
 
-        # 3. 教師信号となるQ値を求める
-        self.model.eval() # 推論モードに切り替え
-        state_action_values = self.model(state_batch).gather(1, action_batch) # 各行動に対応するQ値を特定
+        # 3. Compute the target Q-values
+        self.model.eval() # Switch to evaluation mode
+        state_action_values = self.model(state_batch).gather(1, action_batch) # Extract Q-values for chosen actions
 
-        non_final_mask = torch.BoolTensor(tuple(map(lambda s: s is not None, batch.next_state))) # 次の状態があるか確認
+        non_final_mask = torch.BoolTensor(tuple(map(lambda s: s is not None, batch.next_state))) # Check if next state exists
         next_state_values = torch.zeros(self.config['BATCH_SIZE'])
-        next_state_values[non_final_mask] = self.model(non_final_next_states).max(1)[0].detach() # 次の状態があるindexの最大Q値を求める
+        next_state_values[non_final_mask] = self.model(non_final_next_states).max(1)[0].detach() # Max Q-value for next state
 
-        expected_state_action_values = reward_batch + self.config['GAMMA'] * next_state_values # Q学習の式で教師Q値を求める
+        expected_state_action_values = reward_batch + self.config['GAMMA'] * next_state_values # Compute target Q-values using Q-learning formula
 
-        # 4. 結合パラメータの更新
-        self.model.train() # 訓練モードに切り替え
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1)) # 損失関数の計算
+        # 4. Update the model parameters
+        self.model.train() # Switch to training mode
+        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1)) # Compute loss
 
-        self.optimizer.zero_grad() # 勾配リセット
-        loss.backward() # バックプロバゲージョンを計算
-        self.optimizer.step() # 結合パラメータの更新
+        self.optimizer.zero_grad() # Reset gradients
+        loss.backward() # Backpropagation
+        self.optimizer.step()# Update parameters
 
     def decide_action(self, state, episode):
-        ''' 現在の状態に応じて行動を決定する '''
-        # epsilon = 5.0 * 10**-5 * (episode - self.config['NUM_EPISODES'])**2    # 吉澤修論  
-        # epsilon = (1 - (episode**2/self.config['NUM_EPISODES'] ** 2))   # 二次関数低減
+        '''Decide an action based on the current state'''
+        # epsilon = 5.0 * 10**-5 * (episode - self.config['NUM_EPISODES'])**2    # From Yoshizawa’s thesis
+        # epsilon = (1 - (episode**2/self.config['NUM_EPISODES'] ** 2))         # Quadratic decay
         epsilon = 1 - (episode/self.config['NUM_EPISODES'])
-        if epsilon <= np.random.uniform(0, 1): # 最適行動を選択
+        if epsilon <= np.random.uniform(0, 1): # Choose the best action
             self.model.eval()
             with torch.no_grad():
                 action = self.model(state).max(1)[1].view(1, 1)
-        else: # ランダムに選択
+        else: # Choose a random action
             action = torch.LongTensor([[random.randrange(self.num_actions)]])
         return action
     
     def get_q_values(self, state):
-        '''現在の状態に対するQ値を取得する'''
+        '''Get Q-values for the current state'''
         self.model.eval()
         with torch.no_grad():
             return self.model(state).numpy()
 
-# エージェントクラス
+# Agent class
 class Agent:
     def __init__(self, num_states, num_actions, config):
-        self.config = config  # configを保存
-        self.brain = Brain(num_states, num_actions, config) # エージェントが行動を決定するための頭脳生成
+        self.config = config  # Store configuration
+        self.brain = Brain(num_states, num_actions, config) # Create the brain for the agent to decide actions
 
     def update_q_function(self):
-        ''' Q関数を更新'''
+        '''Update the Q-function'''
         self.brain.replay()
 
     def get_action(self, state, episode):
-        ''' 行動を決定する '''
+        '''Decide an action'''
         action = self.brain.decide_action(state, episode)
         return action
 
     def memorize(self, state, action, state_next, reward):
-        ''' memoryオブジェクトにtransitionの内容を保存する'''
+        '''Save the transition to the memory object'''
         self.brain.memory.push(state, action, state_next, reward)
     
     def get_q_values(self, state):
-        '''Brainクラスから現在の状態に対するQ値を取得する'''
+        '''Get Q-values for the current state from the Brain class'''
         return self.brain.get_q_values(state)
 
-# 環境クラス (本からの変更あり)
+# Environment class (modified from original)s
 class SUMOEnvironment:
     def __init__(self, model_number, model_specific_config, state_size=5, action_size=2):
         self.step_count = 0
@@ -331,34 +306,34 @@ class SUMOEnvironment:
 
         self.model_number = model_number
         self.config = {
-            **COMMON_CONFIG,         # 共通設定
-            **model_specific_config  # モデル固有の設定
+            **COMMON_CONFIG,         # Common settings
+            **model_specific_config  # Model-specific settings
         }
 
-        # lost_timeをconfigから取得（デフォルト値は2）
+        # Get lost time from config (default is 2 if not specified)
         self.lost_time_steps = self.config.get('LOST_TIME_STEPS', 1)
 
-        # モデルのパス設定
+        # Set model path
         self.model_path = f'trained_model_{model_number}.pth'
         self.saving_model_path = f'trained_model_{model_number}'
 
-        # DataSaverの初期化を追加
+        # Initialize DataSaver
         self.data_saver = DataSaver(model_path=self.saving_model_path)  
-        self.data_saver.save_config(self.config, self.model_number)  # 設定情報を保存
-        self.generator = None  # 初期化時にはGeneratorを作成しない
-        self.state_size = state_size  # 状態数 (過去10回分の左右のcandy履歴を状態として使用)
-        self.action_size = action_size  # 行動数
-        self.agent = Agent(self.state_size, self.action_size, self.config) # 環境内で行動するエージェント生成
+        self.data_saver.save_config(self.config, self.model_number)  # Save configuration info
+        self.generator = None  # Do not create generator at initialization
+        self.state_size = state_size  # Number of state features (e.g., recent history of left/right queues)
+        self.action_size = action_size  # Number of actions
+        self.agent = Agent(self.state_size, self.action_size, self.config) # Create agent that operates in the environment
         self.state = np.zeros(self.state_size)
-        self.q_value_history = []  # Q値の履歴を保存するリスト
+        self.q_value_history = []  # List to store Q-value history
         
-        # ネットワーク構造の情報を更新
+        # Update network structure information
         self.data_saver.update_network_structure(self.agent.brain.model)
         
-        # 設定情報を保存（ネットワーク構造を含む）
+        # Save configuration (including network structure)
         self.data_saver.save_config(self.config, self.model_number)
 
-        # configから値を取得
+        # Get number of episodes from config
         NUM_EPISODES = self.config['NUM_EPISODES']
         self.episodes_to_plot = [0, 
                                NUM_EPISODES-5, 
@@ -366,7 +341,7 @@ class SUMOEnvironment:
                                NUM_EPISODES-3, 
                                NUM_EPISODES-2, 
                                NUM_EPISODES-1]
-        self.action_results = []  # 行動結果を保存するリスト
+        self.action_results = []  # List to store action outcomes
         
         self.lost_time_remaining = 0
         self.current_lane_history = []
@@ -375,20 +350,20 @@ class SUMOEnvironment:
         self.episode_current_lanes = []
         self.all_episode_total_delays = []  
 
-        #待ち行列関連
+        # Queue-related variables
         self.left_queue = 0
         self.right_queue = 0
         self.left_queue_history = []
         self.right_queue_history = []
 
-        # 総遅れ時間の評価用
+        # For evaluating total delay time
         self.total_collected = 0
         self.total_delay_time = 0
 
-        # 報酬関数のための変数
+        # Variable used in the reward function
         self.previous_total_queue = 0
 
-        # 理論上の最大報酬を計算
+        # Calculate theoretical maximum reward
         self.theoretical_rewards = 6826
         # self.theoretical_rewards = self.calculate_theoretical_rewards()
         print(f"Theoretical Maximum Reward: {self.theoretical_rewards}")
@@ -702,20 +677,20 @@ class SUMOEnvironment:
         plt.ylabel("Total Reward")
         self.data_saver.save_plot(fig_rewards, 'learning_curve')
 
-# Environmentクラスとは独立して定義している
+# Defined independently of the Environment class
 def run_model(model_number):
         print(f"\nRunning Model {model_number}")
         print("=====================================")
         
-        # モデル設定の取得
+        # Retrieve model configuration
         if model_number not in MODEL_CONFIGS:
             print(f"Error: No configuration found for model number {model_number}")
             raise SystemExit("Program terminated due to missing model configuration.")
         
-        # モデル設定の取得
+        # Check if model path already exists
         config = MODEL_CONFIGS[model_number]
         
-        # モデルの保存パスをチェック
+        # Initialize environment (if you want to change lost time, modify lost_time_steps=2 here)
         model_path = f'trained_model_{model_number}.pth'
         if os.path.exists(model_path):
             print(f"Error: Model already exists at {model_path}")
@@ -725,11 +700,11 @@ def run_model(model_number):
         env = SUMOEnvironment(model_number, config) #ロスタイムを変更する場合は(lost_time_steps=2)のように変更すること
         rewards, all_actions, all_optimal_actions, all_action_results, total_delays = env.run()  
 
-        # 学習済みモデルの保存
+        # Save the trained model
         torch.save(env.agent.brain.model.state_dict(), model_path)
         print(f"Training completed and model {model_number} saved.")
 
-        # 最新10エピソード分の総遅れ時間の平均値
+        # Print average total delay time for the last few episodes
         print(f'Average of total delay time for the last 10 episodes = {np.mean(total_delays[-10:])}')
         print(f'Average of total delay time for the last 8 episodes = {np.mean(total_delays[-8:])}')
         print(f'Average of total delay time for the last 5 episodes = {np.mean(total_delays[-5:])}')
