@@ -21,21 +21,26 @@ COMMON_CONFIG = {
 }
 
 SUMO_BINARY='sumo'
-MODEL_CONFIGS = {
-    1: {
-    "SUMOCFG_PATH": "./hh.sumocfg",  # ← change this per traffic scenario
-    "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
-    "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 100,           # training runs
-    "MAX_STEPS": 12000,            # total SUMO steps per episode (20 minutes at 0.1s step)
-    "DECISION_STEP": 50,
-    "LOST_TIME_STEPS": 50,         # 5 seconds = 50 steps (SUMO step-length = 0.1s)
-    "EPSILON": 0.1,                # exploration rate for ε-greedy
-    "GAMMA": 0.95,
+SUMO_PATH = 'sumo'
+
+SUMO_CONFIG = {
+    "SUMOCFG_PATH": f"./{SUMO_PATH}/1/main.sumocfg",  # ← change this per traffic scenario
     "EASTBOUND_LANE_ID": "Node1_2_EB_0",
     "SOUTHBOUND_LANE_ID": "Node3_2_SB_0",
     "TRAFFIC_LIGHT_NODE": "Node2",
-    "STEP": "0.1"
+}
+
+MODEL_CONFIGS = {
+    1: {
+    "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
+    "ACTION_SIZE": 2,              # 0: keep, 1: switch
+    "NUM_EPISODES": 100,           # training runs
+    "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
+    "DECISION_STEP": 500,
+    "LOST_TIME_STEPS": 500,         # 5 seconds = 50 steps (SUMO step-length = 0.1s)
+    "EPSILON": 0.1,                # exploration rate for ε-greedy
+    "GAMMA": 0.95,
+    "STEP": 0.01
 },
 }
 
@@ -44,7 +49,7 @@ MODELS_TO_RUN = [ 1 ]
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 class DataSaver:
-    def __init__(self, base_dir= r"C:\Users\khrti\OneDrive\ドキュメント\Project\Sumo\Mimic\results" , model_path = None):
+    def __init__(self, base_dir= r"C:\Users\khrti\OneDrive\ドキュメント\Project\Sumo\simpleflow\results" , model_path = None):
         self.base_dir = base_dir
         self.model_path = model_path if model_path is not None else ""
         
@@ -307,7 +312,8 @@ class SUMOEnvironment:
         self.model_number = model_number
         self.config = {
             **COMMON_CONFIG,         # Common settings
-            **model_specific_config  # Model-specific settings
+            **model_specific_config,  # Model-specific settings
+            **SUMO_CONFIG
         }
 
         # Get lost time from config (default is 2 if not specified)
@@ -368,10 +374,6 @@ class SUMOEnvironment:
         # self.theoretical_rewards = self.calculate_theoretical_rewards()
         print(f"Theoretical Maximum Reward: {self.theoretical_rewards}")
         print("---")
-
-    def calculate_theoretical_rewards(self):
-        """各ステップでのCandyの最大値の累計を計算"""
-        return sum(max(candy) for candy in self.generator.candy_pattern)
 
     def step(self, episode, current_step):
         state_array = self._get_state()
@@ -465,7 +467,11 @@ class SUMOEnvironment:
                 "-c", self.config["SUMOCFG_PATH"],
                 "--step-length", str(self.config.get("STEP", "0.1")),
                 "--start",
-                "--quit-on-end"
+                "--quit-on-end",
+                "--delay", "0",
+                "--lateral-resolution", "0",
+                "--duration-log.statistics", 
+                "--statistic-output", f"{self.config["SUMOCFG_PATH"]}/statistic"
             ])
 
             self.current_phase = 0
@@ -527,23 +533,23 @@ class SUMOEnvironment:
         return total_rewards, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_delays
 
     def plot_q_values(self):
-        '''全エピソード全ステップの出力Q値の推移グラフを出力'''
-        # プロットの作成
+        '''Output a graph of the output Q value over all episodes and steps'''
+        # Creating a plot
         fig = plt.figure(figsize=(20, 15))
         ax = fig.add_subplot(111)
 
-        # 全エピソードの全ステップのQ値を1つの配列にまとめる
+        # Collect all Q values ​​of all steps of all episodes into one array
         all_q_values = np.concatenate(self.q_value_history)
         
-        # 総ステップ数を計算
+        # Calculate the total number of steps
         total_steps = len(all_q_values)
         
-        # x軸の値を生成（エピソードとステップの情報を含む）
+        # Generates x-axis values ​​(including episode and step information)
         x = np.arange(total_steps)
         episodes = x // self.config['MAX_STEPS']
         steps = x % self.config['MAX_STEPS']
         
-        # 行動別にプロット
+        # Plot by behavior
         action_labels = ['0:Keep', '1:Switch']
         for i in range(2):
             ax.plot(x, all_q_values[:, i], label=f'Action {i}: {action_labels[i]}', alpha=0.7)
@@ -553,7 +559,7 @@ class SUMOEnvironment:
         ax.set_ylabel('Q-value')
         ax.legend()
         
-        # 指定されたエピソードの第1ステップにティックを設定
+        # Sets the tick to the first step of the specified episode.
         tick_episodes = [0, 49] + list(range(99, self.config['NUM_EPISODES'], 50))
         tick_locations = [ep * self.config['MAX_STEPS'] for ep in tick_episodes]
         
@@ -565,7 +571,7 @@ class SUMOEnvironment:
         return fig
 
     def plot_q_value(self):
-        '''特定のエピソードにおける出力Q値の推移グラフを出力'''
+        '''Output a graph of the output Q value transition in a specific episode'''
         fig = plt.figure(figsize=(20, 15))
         action_labels = ['0:Keep', '1:Switch']
         for i, episode in enumerate(self.episodes_to_plot):
@@ -583,7 +589,7 @@ class SUMOEnvironment:
         return fig
 
     def plot_queue_lengths(self):
-        '''特定のエピソードにおける待ち行列の推移、選択レーン、およびアクションタイミングのグラフを出力'''
+        '''Print graphs of queue transitions, selected lanes, and action timings for a given episode'''
         fig = plt.figure(figsize=(20, 15))
         queue_labels = ['queue (route_we)', 'queue (route_ns)']
         for i, episode in enumerate(self.episodes_to_plot):
@@ -592,11 +598,11 @@ class SUMOEnvironment:
                 queue_steps = range(len(self.left_queue_history[episode]))
                 steps = range(len(self.left_queue_history[episode])-1)
                 
-                # 待ち行列の長さをプロット
+                # Plot queue lengths
                 ax.plot(queue_steps, self.left_queue_history[episode], label=queue_labels[0])
                 ax.plot(queue_steps, self.right_queue_history[episode], label=queue_labels[1])
                 
-                # 選択されたレーンを塗りつぶし表示
+                # Fill selected lane
                 selected_lane = self.all_episode_current_lanes[episode]
                 for j in range(1, len(steps)+1):
                     if selected_lane[j] == 0:
@@ -604,12 +610,12 @@ class SUMOEnvironment:
                     else:
                         ax.axvspan(j-1, j, facecolor='red', alpha=0.1, linewidth=0)
                 
-                # 'S'と'L'のアクションを表示
+                # Show 'S' and 'L' actions
                 for step, action in enumerate(self.all_episode_action_results[episode]):
                     if action in ['S', 'L']:
                         ax.axvspan(step, step+1, facecolor='grey', alpha=0.6, linewidth=0)
                 
-                # 凡例用のダミープロット
+                # Dummy plot for legend
                 ax.plot([], [], color='blue', alpha=0.1, linewidth=10, label='route_we selected')
                 ax.plot([], [], color='red', alpha=0.1, linewidth=10, label='route_ns selected')
                 ax.plot([], [], color='grey', alpha=0.6, linewidth=10, label='Switch and Lost time')
@@ -624,7 +630,7 @@ class SUMOEnvironment:
         return fig
 
     def plot_total_delays(self):
-        '''総遅延時間の推移グラフを出力'''
+        '''Output a graph of the total delay time'''
         fig = plt.figure(figsize=(20, 15))
         ax = fig.add_subplot(111)
         
@@ -697,7 +703,7 @@ def run_model(model_number):
             print("Please delete the existing model file or specify a different path.")
             raise SystemExit("Program terminated to prevent overwriting existing model.")   
     
-        env = SUMOEnvironment(model_number, config) #ロスタイムを変更する場合は(lost_time_steps=2)のように変更すること
+        env = SUMOEnvironment(model_number, config) #If you want to change the lost time, change it as follows: (lost_time_steps=2)
         rewards, all_actions, all_optimal_actions, all_action_results, total_delays = env.run()  
 
         # Save the trained model
