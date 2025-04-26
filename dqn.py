@@ -24,7 +24,8 @@ SUMO_BINARY='sumo'
 SUMO_PATH = 'sumo'
 
 SUMO_CONFIG = {
-    "SUMOCFG_PATH": f"./{SUMO_PATH}/1/main.sumocfg",  # ← change this per traffic scenario
+    "SUMOCFG_PATH": f"./{SUMO_PATH}/1",
+    "SUMO_FILE": "main.sumocfg",  # ← change this per traffic scenario
     "EASTBOUND_LANE_ID": "Node1_2_EB_0",
     "SOUTHBOUND_LANE_ID": "Node3_2_SB_0",
     "TRAFFIC_LIGHT_NODE": "Node2",
@@ -36,12 +37,20 @@ MODEL_CONFIGS = {
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
     "NUM_EPISODES": 100,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
-    "DECISION_STEP": 500,
-    "LOST_TIME_STEPS": 500,         # 5 seconds = 50 steps (SUMO step-length = 0.1s)
+    "DECISION_STEP": 5,
+    "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
     "EPSILON": 0.1,                # exploration rate for ε-greedy
     "GAMMA": 0.95,
-    "STEP": 0.01
+    "STEP": 1,
+    "EPSILON_TYPE": 'linear'
 },
+}
+
+# Options for ε-greedy function
+EPSILON_FUNCTIONS = {
+    'quadratic': lambda episode, num_episodes: 1 - (episode**2/num_episodes**2),            
+    'yoshizawa': lambda episode, num_episodes: 5.0 * 10**-5 * (episode - num_episodes)**2,  
+    'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)                      
 }
 
 MODELS_TO_RUN = [ 1 ] 
@@ -222,6 +231,7 @@ class Brain:
         print(self.model)                       # Output the model structure
         # Optimizer setting (using Adam with a learning rate of 0.0001)
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
+        self.epsilon_func = EPSILON_FUNCTIONS[self.config.get('EPSILON_TYPE', 'linear')]
 
     def replay(self):
         '''Learn the neural network parameters using Experience Replay'''
@@ -259,9 +269,7 @@ class Brain:
 
     def decide_action(self, state, episode):
         '''Decide an action based on the current state'''
-        # epsilon = 5.0 * 10**-5 * (episode - self.config['NUM_EPISODES'])**2    # From Yoshizawa’s thesis
-        # epsilon = (1 - (episode**2/self.config['NUM_EPISODES'] ** 2))         # Quadratic decay
-        epsilon = 1 - (episode/self.config['NUM_EPISODES'])
+        epsilon = self.epsilon_func(episode, self.config['NUM_EPISODES'])
         if epsilon <= np.random.uniform(0, 1): # Choose the best action
             self.model.eval()
             with torch.no_grad():
@@ -326,7 +334,7 @@ class SUMOEnvironment:
         # Initialize DataSaver
         self.data_saver = DataSaver(model_path=self.saving_model_path)  
         self.data_saver.save_config(self.config, self.model_number)  # Save configuration info
-        self.generator = None  # Do not create generator at initialization
+
         self.state_size = state_size  # Number of state features (e.g., recent history of left/right queues)
         self.action_size = action_size  # Number of actions
         self.agent = Agent(self.state_size, self.action_size, self.config) # Create agent that operates in the environment
@@ -438,14 +446,6 @@ class SUMOEnvironment:
 
         return [left_q, right_q, prev_left, prev_right, self.current_phase]
 
-    def analyze_actions(self, total_reward): 
-        accuracy = total_reward / self.theoretical_rewards
-        
-        return {
-            "overall_accuracy": accuracy
-        }
-
-
     def run(self):
         # Config
         NUM_EPISODES = self.config['NUM_EPISODES']
@@ -464,14 +464,14 @@ class SUMOEnvironment:
             # Start SUMO
             traci.start([
                 SUMO_BINARY,
-                "-c", self.config["SUMOCFG_PATH"],
+                "-c", f"{self.config["SUMOCFG_PATH"]}/{self.config["SUMO_FILE"]}",
                 "--step-length", str(self.config.get("STEP", "0.1")),
                 "--start",
                 "--quit-on-end",
                 "--delay", "0",
                 "--lateral-resolution", "0",
                 "--duration-log.statistics", 
-                "--statistic-output", f"{self.config["SUMOCFG_PATH"]}/statistic"
+                "--statistic-output", f"{self.config["SUMOCFG_PATH"]}/stats_summary_{episode}.xml"
             ])
 
             self.current_phase = 0
