@@ -43,7 +43,7 @@ MODEL_CONFIGS = {
     1: {
     "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 5,           # training runs
+    "NUM_EPISODES": 1,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
@@ -281,6 +281,7 @@ class SUMOEnvironment:
         self.agent = Agent(self.state_size, self.action_size, self.config) # Create agent that operates in the environment
         self.state = np.zeros(self.state_size)
         self.q_value_history = []  # List to store Q-value history
+        self.all_episode_observed_step = []
         
         # Update network structure information
         self.data_saver.update_network_structure(self.agent.brain.model)
@@ -316,22 +317,32 @@ class SUMOEnvironment:
         self.previous_total_queue = 0
         print("---")
 
+    def _get_state(self):
+        left_q = traci.lane.getLastStepHaltingNumber(self.config['EASTBOUND_LANE_ID'])
+        right_q = traci.lane.getLastStepHaltingNumber(self.config['SOUTHBOUND_LANE_ID'])
+        prev_left = self.left_queue 
+        prev_right = self.right_queue 
+
+        self.left_queue = left_q
+        self.right_queue = right_q
+        self.state =  [left_q, right_q, prev_left, prev_right, self.current_phase]
+
+        return [left_q, right_q, prev_left, prev_right, self.current_phase]
+
     def step(self, episode, current_step):
-        state_array = self._get_state()
+        state_array = self.state
         state_tensor = torch.FloatTensor(state_array).unsqueeze(0)
         q_values = self.agent.get_q_values(state_tensor)
-
         action = torch.tensor([[0]])  # default keep
         took_action = False
 
         # === Only decide if at decision step ===
         if self.step_count >= self.next_decision_step:
             action = self.agent.get_action(state_tensor, episode)
-            # print(f'step {current_step} -> ' , state_array, action)
             took_action = True
 
             if action.item() == 1:  # SWITCH
-                # print("\n it is switch -> ", self.step_count, "\n")
+                print("\n it is switch -> ", self.step_count, "state -> ", self.state, "\n")
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -345,8 +356,11 @@ class SUMOEnvironment:
 
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
             else:  # KEEP
-                # print("\n it is keep -> ", self.step_count, "\n")
+                print("\n it is keep -> ", self.step_count, "state -> ", self.state, "\n")
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
+        else:
+            # print(f'step {current_step}, {self.step_count}  not decision time -> ' , state_array, action)
+            pass
 
         # Continue normal step (either just stepped or after switching)
         traci.simulationStep()
@@ -363,22 +377,11 @@ class SUMOEnvironment:
             self.agent.memorize(state_tensor, action, next_state_tensor, reward_tensor)
             self.agent.update_q_function()
 
-        return reward_value, str(action.item()), {
+        return took_action, reward_value, str(action.item()), {
             'q_values': q_values[0],
             'left_queue': next_state_array[0],
             'right_queue': next_state_array[1]
         }
-
-    def _get_state(self):
-        left_q = traci.lane.getLastStepHaltingNumber(self.config['EASTBOUND_LANE_ID'])
-        right_q = traci.lane.getLastStepHaltingNumber(self.config['SOUTHBOUND_LANE_ID'])
-        prev_left = self.left_queue if hasattr(self, 'left_queue') else 0
-        prev_right = self.right_queue if hasattr(self, 'right_queue') else 0
-
-        self.left_queue = left_q
-        self.right_queue = right_q
-
-        return [left_q, right_q, prev_left, prev_right, self.current_phase]
 
     def run(self):
         # Config
@@ -387,6 +390,7 @@ class SUMOEnvironment:
 
         # Result containers
         total_rewards = []
+        self.all_episode_observed_step = []
         self.q_value_history = []
         self.left_queue_history = []
         self.right_queue_history = []
@@ -412,12 +416,14 @@ class SUMOEnvironment:
                 sumo_cmd += ["--statistic-output", stats_output_path]
 
             traci.start(sumo_cmd)
+            self.state = np.zeros(self.state_size) # Reset state
             self.current_phase = 0
             self.last_switch_step = 0
             self.total_delay_time = 0
             self.left_queue = 0
             self.right_queue = 0
 
+            episode_observed_step = []
             episode_q_values = []
             episode_actions = []
             episode_left_queue = []
@@ -426,15 +432,18 @@ class SUMOEnvironment:
 
             while True:
                 # Step through simulation
-                reward, action_result, info = self.step(episode, self.step_count)
+                took_action, reward, action_result, info = self.step(episode, self.step_count)
 
                 # Save episode info
-                episode_q_values.append(info["q_values"])
-                episode_actions.append(action_result)
-                episode_left_queue.append(info["left_queue"])
-                episode_right_queue.append(info["right_queue"])
-                current_phase_record.append(self.current_phase)
-                self.total_delay_time += -reward  # reward is negative total queue
+                if took_action:
+                    # the step_count is already incremented due to need to check future value, so we have to minus it by one
+                    episode_observed_step.append(self.step_count - 1) 
+                    episode_q_values.append(info["q_values"])
+                    episode_actions.append(action_result)
+                    episode_left_queue.append(info["left_queue"])
+                    episode_right_queue.append(info["right_queue"])
+                    current_phase_record.append(self.current_phase)
+                    self.total_delay_time += -reward  # reward is negative total queue
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -450,6 +459,7 @@ class SUMOEnvironment:
                 total -= sum(q_values)
 
             total_rewards.append(total)
+            self.all_episode_observed_step.append(episode_observed_step)
             self.q_value_history.append(episode_q_values)
             self.left_queue_history.append(episode_left_queue)
             self.right_queue_history.append(episode_right_queue)
@@ -588,26 +598,26 @@ class SUMOEnvironment:
         })
         self.data_saver.save_data(rewards_df, 'rewards')
 
-        # Q-values
+        # === Q-values per Decision ===
         q_values_data = []
-        for episode, q_values in enumerate(self.q_value_history):
+        for episode, (q_values, steps) in enumerate(zip(self.q_value_history, self.all_episode_observed_step)):
             episode_data = pd.DataFrame(q_values, columns=['Q_keep', 'Q_switch'])
             episode_data['episode'] = episode
-            episode_data['step'] = range(len(q_values))
+            episode_data['step'] = steps  # ✅ Correct: real simulation step
             q_values_data.append(episode_data)
         q_values_df = pd.concat(q_values_data, ignore_index=True)
         self.data_saver.save_data(q_values_df, 'q_values')
 
-        # Queue
+        # === Queue and Actions per Decision ===
         queue_data = []
-        for episode in range(len(self.left_queue_history)):
+        for episode, steps in enumerate(self.all_episode_observed_step):
             episode_data = pd.DataFrame({
                 'queue_left': self.left_queue_history[episode],
                 'queue_right': self.right_queue_history[episode],
                 'current_phase': self.all_episode_current_lanes[episode],
                 'action': self.all_episode_action_results[episode],
                 'episode': episode,
-                'step': range(len(self.left_queue_history[episode]))
+                'step': steps  # ✅ Use real observed steps
             })
             queue_data.append(episode_data)
         queue_df = pd.concat(queue_data, ignore_index=True)
