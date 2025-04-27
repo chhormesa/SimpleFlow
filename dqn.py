@@ -43,7 +43,7 @@ MODEL_CONFIGS = {
     1: {
     "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 1,           # training runs
+    "NUM_EPISODES": 1000,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
@@ -301,7 +301,7 @@ class SUMOEnvironment:
         self.an_episode_actions = []
         self.all_episode_action_results = []
         self.episode_current_lanes = []
-        self.all_episode_total_delays = []  
+        self.all_episode_total_queue = []  
 
         # Queue-related variables
         self.left_queue = 0
@@ -311,7 +311,7 @@ class SUMOEnvironment:
 
         # For evaluating total delay time
         self.total_collected = 0
-        self.total_delay_time = 0
+        self.episode_total_queue = 0
 
         # Variable used in the reward function
         self.previous_total_queue = 0
@@ -342,7 +342,7 @@ class SUMOEnvironment:
             took_action = True
 
             if action.item() == 1:  # SWITCH
-                print("\n it is switch -> ", self.step_count, "state -> ", self.state, "\n")
+                # print("\n it is switch -> ", self.step_count, "state -> ", self.state, "\n")
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -356,7 +356,7 @@ class SUMOEnvironment:
 
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
             else:  # KEEP
-                print("\n it is keep -> ", self.step_count, "state -> ", self.state, "\n")
+                # print("\n it is keep -> ", self.step_count, "state -> ", self.state, "\n")
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
         else:
             # print(f'step {current_step}, {self.step_count}  not decision time -> ' , state_array, action)
@@ -389,13 +389,13 @@ class SUMOEnvironment:
         MAX_STEPS = self.config['MAX_STEPS']
 
         # Result containers
-        total_rewards = []
+        all_episode_sum_q_values = []
         self.all_episode_observed_step = []
         self.q_value_history = []
         self.left_queue_history = []
         self.right_queue_history = []
         self.all_episode_action_results = []
-        self.all_episode_total_delays = []
+        self.all_episode_total_queue = []
         self.all_episode_current_lanes = []
 
         for episode in range(NUM_EPISODES):
@@ -411,17 +411,18 @@ class SUMOEnvironment:
                 "--duration-log.statistics"
             ]
 
-            if episode % 5 == 0:
+            if episode % 50 == 0:
                 stats_output_path = os.path.join(self.data_saver.output_dir, f"stats_summary_{episode}.xml")
                 sumo_cmd += ["--statistic-output", stats_output_path]
 
             traci.start(sumo_cmd)
             self.state = np.zeros(self.state_size) # Reset state
             self.current_phase = 0
-            self.last_switch_step = 0
-            self.total_delay_time = 0
+            self.episode_total_queue = 0
             self.left_queue = 0
             self.right_queue = 0
+            self.step_count = 0
+            self.next_decision_step = 0
 
             episode_observed_step = []
             episode_q_values = []
@@ -443,7 +444,7 @@ class SUMOEnvironment:
                     episode_left_queue.append(info["left_queue"])
                     episode_right_queue.append(info["right_queue"])
                     current_phase_record.append(self.current_phase)
-                    self.total_delay_time += -reward  # reward is negative total queue
+                    self.episode_total_queue += -reward  # reward is negative total queue
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -458,27 +459,28 @@ class SUMOEnvironment:
                 q_values = q_tensor.tolist()  # list of Q-values (for both actions)
                 total -= sum(q_values)
 
-            total_rewards.append(total)
+            all_episode_sum_q_values.append(total)
             self.all_episode_observed_step.append(episode_observed_step)
             self.q_value_history.append(episode_q_values)
             self.left_queue_history.append(episode_left_queue)
             self.right_queue_history.append(episode_right_queue)
             self.all_episode_action_results.append(episode_actions)
-            self.all_episode_total_delays.append(self.total_delay_time)
+            self.all_episode_total_queue.append(self.episode_total_queue)
             self.all_episode_current_lanes.append(current_phase_record)
 
             # Console log
             if episode % 10 == 9 or episode == 0 or episode >= (NUM_EPISODES - 10):
-                print(f"Episode {episode}: Total Reward = {total_rewards[-1]:.2f}, Total Delay = {self.total_delay_time:.2f}")
+                print(f"Episode {episode}: Total Reward = {all_episode_sum_q_values[-1]:.2f}, Total Delay = {self.episode_total_queue:.2f}")
                 print(f"Action Results: {episode_actions[:20]} ...")
                 print("---")
 
         print("Training finished.")
 
         # === Save Results ===
-        self._save_training_results(total_rewards)
+        self._save_training_results(all_episode_sum_q_values)
+        print(self.all_episode_observed_step)
 
-        return total_rewards, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_delays
+        return all_episode_sum_q_values, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_queue
 
     def plot_q_values(self):
         '''Output a graph of the output Q value over all episodes and steps'''
@@ -577,24 +579,24 @@ class SUMOEnvironment:
         plt.tight_layout()
         return fig
 
-    def plot_total_delays(self):
-        '''Output a graph of the total delay time'''
+    def plot_total_queues(self):
+        '''Output a graph of the total queues'''
         fig = plt.figure(figsize=(20, 15))
         ax = fig.add_subplot(111)
         
-        ax.plot(self.all_episode_total_delays)
-        ax.set_title('Total Delay Time per Episode')
+        ax.plot(self.all_episode_total_queue)
+        ax.set_title('Total Queues per Episode')
         ax.set_xlabel('Episode')
-        ax.set_ylabel('Total Delay Time')
+        ax.set_ylabel('Total Queues')
         
         plt.tight_layout()
         return fig
 
-    def _save_training_results(self, total_rewards):
+    def _save_training_results(self, all_episode_sum_q_values):
         rewards_df = pd.DataFrame({
-            'episode': range(len(total_rewards)),
-            'total_reward': total_rewards,
-            'total_delay': self.all_episode_total_delays
+            'episode': range(len(all_episode_sum_q_values)),
+            'sum_q_values': all_episode_sum_q_values,
+            'sum_queues': self.all_episode_total_queue
         })
         self.data_saver.save_data(rewards_df, 'rewards')
 
@@ -603,7 +605,7 @@ class SUMOEnvironment:
         for episode, (q_values, steps) in enumerate(zip(self.q_value_history, self.all_episode_observed_step)):
             episode_data = pd.DataFrame(q_values, columns=['Q_keep', 'Q_switch'])
             episode_data['episode'] = episode
-            episode_data['step'] = steps  # ✅ Correct: real simulation step
+            episode_data['step'] = steps
             q_values_data.append(episode_data)
         q_values_df = pd.concat(q_values_data, ignore_index=True)
         self.data_saver.save_data(q_values_df, 'q_values')
@@ -617,7 +619,7 @@ class SUMOEnvironment:
                 'current_phase': self.all_episode_current_lanes[episode],
                 'action': self.all_episode_action_results[episode],
                 'episode': episode,
-                'step': steps  # ✅ Use real observed steps
+                'step': steps 
             })
             queue_data.append(episode_data)
         queue_df = pd.concat(queue_data, ignore_index=True)
@@ -625,10 +627,10 @@ class SUMOEnvironment:
 
         # Plot
         fig_rewards = plt.figure(figsize=(20, 10))
-        plt.plot(total_rewards)
-        plt.title("Total Rewards over Episodes")
+        plt.plot(all_episode_sum_q_values)
+        plt.title("Sum Q values over Episodes")
         plt.xlabel("Episode")
-        plt.ylabel("Total Reward")
+        plt.ylabel("Sum Q value")
         self.data_saver.save_plot(fig_rewards, 'learning_curve')
 
 # Defined independently of the Environment class
