@@ -13,29 +13,37 @@ import pandas as pd
 import traci
 os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 
-COMMON_CONFIG = {
-    'MAX_STEPS': 12000,
-    'NUM_EPISODES': 5,
-    'BATCH_SIZE': 20,
-    'CAPACITY': 1000
-}
-
 SUMO_BINARY='sumo'
 SUMO_PATH = 'sumo'
+SUMO_MODEL = 'hh'
 
-SUMO_CONFIG = {
-    "SUMOCFG_PATH": f"./{SUMO_PATH}/2",
+SUMO_CONFIG_COMMON = {
     "SUMO_FILE": "main.sumocfg",  # ← change this per traffic scenario
     "EASTBOUND_LANE_ID": "Node1_2_EB_0",
     "SOUTHBOUND_LANE_ID": "Node3_2_SB_0",
     "TRAFFIC_LIGHT_NODE": "Node2",
 }
+SUMO_CONFIG = {
+    'hh': {
+        "Description": "High-High traffic flow",
+        "SUMOCFG_PATH": f"./{SUMO_PATH}/hh",
+    },
+    'hl': {
+        "Description": "High-Low traffic flow",
+        "SUMOCFG_PATH": f"./{SUMO_PATH}/hl",
+    }
+}
 
+COMMON_CONFIG = {
+    'MAX_STEPS': 12000,
+    'BATCH_SIZE': 20,
+    'CAPACITY': 1000
+}
 MODEL_CONFIGS = {
-    2: {
+    1: {
     "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 5000,           # training runs
+    "NUM_EPISODES": 5,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
@@ -53,119 +61,53 @@ EPSILON_FUNCTIONS = {
     'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)                      
 }
 
-MODELS_TO_RUN = [ 2 ] 
+MODELS_TO_RUN = [ 1 ] 
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 class DataSaver:
-    def __init__(self, base_dir= r"C:\Users\khrti\OneDrive\ドキュメント\Project\Sumo\simpleflow\results" , model_path = None):
-        self.base_dir = base_dir
-        self.model_path = model_path if model_path is not None else ""
-        
-        if not os.path.exists(base_dir):
-            os.makedirs(base_dir)
-        
-        model_dir = os.path.join(self.base_dir, self.model_path)
-        if os.path.exists(model_dir):
-            self.output_dir = self._create_next_subfolder()
-        else:
-            self.output_dir = model_dir
-            os.makedirs(self.output_dir)
-        
-    def _create_next_subfolder(self):
-        base_name = self.model_path[:-1] 
-        current_num = int(self.model_path[-1])  
-        next_num = current_num + 1
-        folder_name = f"{base_name}{next_num}_Attention"
-        
-        output_dir = os.path.join(self.base_dir, folder_name)
-        os.makedirs(output_dir)
-        return output_dir
-    
-    def save_config(self, config, model_number):
-        config_filename = f"model_{model_number}_config.txt"
-        config_path = os.path.join(self.output_dir, config_filename)
-        
-        with open(config_path, 'w') as f:
-            import sys
-            script_name = sys.argv[0]
+    def __init__(self, model_number, sumo_case, base_dir="./results"):
+        self.output_dir = os.path.join(base_dir, str(model_number), sumo_case)
+        os.makedirs(self.output_dir, exist_ok=True)
 
-            f.write(f"Configuration for Model {model_number}\n")
-            f.write("="*50 + "\n\n")
-
-            f.write("Execution Information:\n")
-            f.write("-"*20 + "\n")
-            f.write(f"Script filename: {script_name}\n\n")
-            
-            f.write("Basic Configuration:\n")
-            f.write("-"*20 + "\n")
-            for key, value in config.items():
-                if key != 'NETWORK': 
-                    f.write(f"{key}: {value}\n")
-
-            if hasattr(self, 'network_structure'):
-                f.write("\nNeural Network Architecture:\n")
-                f.write("-"*20 + "\n")
-                f.write(self.network_structure)
-            
-            f.write("\nNotes:\n")
-            f.write("-"*20 + "\n")
-            f.write("- *_INFLOW: Number of vehicles entering per time step\n")
-            f.write("- *_OUTFLOW: Maximum number of vehicles that can exit per time step\n")
-            f.write("- GAMMA: Discount factor for future rewards\n")
-            f.write("- MAX_STEPS: Number of time steps per episode\n")
-            f.write("- NUM_EPISODES: Total number of training episodes\n")
-            f.write("- BATCH_SIZE: Number of samples used for each training step\n")
-            f.write("- CAPACITY: Size of the replay memory buffer\n")
-            
-            from datetime import datetime
-            f.write(f"\nConfiguration saved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    def save_config(self, config):
+        config_path = os.path.join(self.output_dir, "config.json")
+        import json
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4)
+        print(f"Saved config to {config_path}")
 
     def update_network_structure(self, model):
-        import io
-        output = io.StringIO()
-        print(model, file=output)
-        structure = output.getvalue()
-        
-        self.network_structure = (
-            "Network Structure:\n"
-            f"{structure}\n"
-            "\nLayer Details:\n"
-        )
-        
-        total_params = 0
-        for name, param in model.named_parameters():
-            param_count = param.numel()
-            total_params += param_count
-            self.network_structure += f"- {name}: {list(param.shape)} ({param_count:,} parameters)\n"
-        
-        self.network_structure += f"\nTotal Parameters: {total_params:,}"
+        structure_path = os.path.join(self.output_dir, "network_structure.txt")
+        with open(structure_path, 'w', encoding='utf-8') as f:
+            f.write(str(model))
+            f.write("\n\nLayer Details:\n")
+            total_params = 0
+            for name, param in model.named_parameters():
+                count = param.numel()
+                total_params += count
+                f.write(f"{name}: {list(param.shape)} ({count} params)\n")
+            f.write(f"\nTotal Parameters: {total_params}\n")
+        print(f"Saved network structure to {structure_path}")
 
     def save_plot(self, fig, filename):
-        save_filename = f"{self.model_path}_{filename}"
-        
-        path = os.path.join(self.output_dir, f"{save_filename}.png")
+        path = os.path.join(self.output_dir, f"{filename}.png")
         fig.savefig(path)
         plt.close(fig)
-        print(f"saved plot as: {path}")
+        print(f"Saved plot to {path}")
 
     def save_data(self, data, filename):
-        save_filename = f"{self.model_path}_{filename}"
-        
-        path = os.path.join(self.output_dir, f"{save_filename}.csv")
+        path = os.path.join(self.output_dir, f"{filename}.csv")
         if isinstance(data, pd.DataFrame):
-            data.to_csv(path, index=True)
+            data.to_csv(path, index=False)
         else:
-            pd.DataFrame(data).to_csv(path, index=True)
-        print(f"saved data as: {path}")
+            pd.DataFrame(data).to_csv(path, index=False)
+        print(f"Saved data to {path}")
 
-    def save_model(self, model, filename):
-        save_filename = f"{self.model_path}_{filename}"
-        
-        path = os.path.join(self.output_dir, f"{save_filename}.pth")
+    def save_model(self, model, filename="trained_model"):
+        path = os.path.join(self.output_dir, f"{filename}.pth")
         torch.save(model.state_dict(), path)
-        print(f"saved model as: {path}")
-
+        print(f"Saved model to {path}")
 
 # Class for replay memory to enable mini-batch learning
 class ReplayMemory:
@@ -320,19 +262,19 @@ class SUMOEnvironment:
         self.config = {
             **COMMON_CONFIG,         # Common settings
             **model_specific_config,  # Model-specific settings
-            **SUMO_CONFIG
+            **SUMO_CONFIG[SUMO_MODEL],
+            **SUMO_CONFIG_COMMON
         }
 
         # Get lost time from config (default is 2 if not specified)
         self.lost_time_steps = self.config.get('LOST_TIME_STEPS', 1)
 
-        # Set model path
-        self.model_path = f'trained_model_{model_number}.pth'
-        self.saving_model_path = f'trained_model_{model_number}'
+        self.sumo_case = SUMO_MODEL  # Use the global variable for case name
 
         # Initialize DataSaver
-        self.data_saver = DataSaver(model_path=self.saving_model_path)  
-        self.data_saver.save_config(self.config, self.model_number)  # Save configuration info
+        self.data_saver = DataSaver(model_number=self.model_number, sumo_case=self.sumo_case)
+        self.data_saver.save_config(self.config)
+
 
         self.state_size = state_size  # Number of state features (e.g., recent history of left/right queues)
         self.action_size = action_size  # Number of actions
@@ -343,9 +285,6 @@ class SUMOEnvironment:
         # Update network structure information
         self.data_saver.update_network_structure(self.agent.brain.model)
         
-        # Save configuration (including network structure)
-        self.data_saver.save_config(self.config, self.model_number)
-
         # Get number of episodes from config
         NUM_EPISODES = self.config['NUM_EPISODES']
         self.episodes_to_plot = [0, 
@@ -473,8 +412,9 @@ class SUMOEnvironment:
                 "--duration-log.statistics"
             ]
 
-            if episode % 1 == 0:
-                sumo_cmd += ["--statistic-output", f"{self.config['SUMOCFG_PATH']}/stats_summary_{episode}.xml"]
+            if episode % 5 == 0:
+                stats_output_path = os.path.join(self.data_saver.output_dir, f"stats_summary_{episode}.xml")
+                sumo_cmd += ["--statistic-output", stats_output_path]
 
             traci.start(sumo_cmd)
             self.current_phase = 0
@@ -700,7 +640,7 @@ def run_model(model_number):
         config = MODEL_CONFIGS[model_number]
         
         # Initialize environment (if you want to change lost time, modify lost_time_steps=2 here)
-        model_path = f'trained_model_{model_number}.pth'
+        model_path = f'./models/{model_number}/trained_model_{SUMO_MODEL}.pth'
         if os.path.exists(model_path):
             print(f"Error: Model already exists at {model_path}")
             print("Please delete the existing model file or specify a different path.")
