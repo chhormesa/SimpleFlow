@@ -15,7 +15,7 @@ os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 
 SUMO_BINARY='sumo'
 SUMO_PATH = 'sumo'
-SUMO_MODEL = 'hh'
+SUMO_MODEL = 'hl'
 
 SUMO_CONFIG_COMMON = {
     "SUMO_FILE": "main.sumocfg",  # ← change this per traffic scenario
@@ -109,29 +109,6 @@ class DataSaver:
         torch.save(model.state_dict(), path)
         print(f"Saved model to {path}")
 
-# Class for replay memory to enable mini-batch learning
-class ReplayMemory:
-    def __init__(self, CAPACITY):
-        self.capacity = CAPACITY  # Maximum length of the memory
-        self.memory = []          # Variable to store experiences
-        self.index = 0            # Index indicating where to save the next experience
-
-    def push(self, state, action, state_next, reward):
-        ''' Save a transition into memory '''
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)  # If memory is not full, append a new slot
-        self.memory[self.index] = Transition(state, action, state_next, reward)
-        self.index = (self.index + 1) % self.capacity  # Move the save index forward by one
-
-    def sample(self, batch_size):
-        ''' Randomly retrieve a batch of experiences '''
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        ''' Return the current length of the memory '''
-        return len(self.memory)
-
-
 class Net(nn.Module):
     def __init__(self, n_in, n_mid1, n_mid2, n_mid3, n_mid4, n_out, dropout_rate=0.2):
         super().__init__()
@@ -165,7 +142,7 @@ class Brain:
     def __init__(self, num_states, num_actions, config):
         self.num_actions = num_actions # Get the number of actions
         self.config = config
-        self.memory = ReplayMemory(self.config['CAPACITY'])  # Create a memory object to store experiences
+        # self.memory = ReplayMemory(self.config['CAPACITY'])  # Create a memory object to store experiences
 
         # Dueling DQN architecture
         self.model = Net(num_states, 128, 128, 64, 64, num_actions)
@@ -176,7 +153,6 @@ class Brain:
 
     def replay(self):
         '''Learn the neural network parameters using Experience Replay'''
-
         # 1. Check if memory is large enough (do nothing if memory size is smaller than mini-batch size)
         if len(self.memory) < self.config['BATCH_SIZE']:
             return
@@ -231,26 +207,32 @@ class Agent:
         self.config = config  # Store configuration
         self.brain = Brain(num_states, num_actions, config) # Create the brain for the agent to decide actions
 
-    def update_q_function(self):
-        '''Update the Q-function'''
-        self.brain.replay()
+    # def update_q_function(self):
+    #     '''Update the Q-function'''
+    #     self.brain.replay()
 
     def get_action(self, state, episode):
         '''Decide an action'''
         action = self.brain.decide_action(state, episode)
         return action
 
-    def memorize(self, state, action, state_next, reward):
-        '''Save the transition to the memory object'''
-        self.brain.memory.push(state, action, state_next, reward)
+    # def memorize(self, state, action, state_next, reward):
+    #     '''Save the transition to the memory object'''
+    #     self.brain.memory.push(state, action, state_next, reward)
     
     def get_q_values(self, state):
         '''Get Q-values for the current state from the Brain class'''
         return self.brain.get_q_values(state)
+    
+    def load_model(self, model_path):
+        """Load trained model from .pth"""
+        self.brain.model.load_state_dict(torch.load(model_path))
+        self.brain.model.eval()
+        print(f"Loaded model from {model_path}")
 
 # Environment class (modified from original)s
 class SUMOEnvironment:
-    def __init__(self, model_number, model_specific_config, state_size=5, action_size=2):
+    def __init__(self, model_number, model_specific_config,sumo_case=None, state_size=5, action_size=2):
         self.step_count = 0
         self.next_decision_step = 0
         self.green_phases = [0, 2]             # Real green phases
@@ -269,7 +251,7 @@ class SUMOEnvironment:
         # Get lost time from config (default is 2 if not specified)
         self.lost_time_steps = self.config.get('LOST_TIME_STEPS', 1)
 
-        self.sumo_case = SUMO_MODEL  # Use the global variable for case name
+        self.sumo_case = sumo_case if sumo_case is not None else SUMO_MODEL
 
         # Initialize DataSaver
         self.data_saver = DataSaver(model_number=self.model_number, sumo_case=self.sumo_case)
@@ -314,6 +296,11 @@ class SUMOEnvironment:
 
         # Variable used in the reward function
         self.previous_total_queue = 0
+
+        # Calculate theoretical maximum reward
+        self.theoretical_rewards = 6826
+        # self.theoretical_rewards = self.calculate_theoretical_rewards()
+        print(f"Theoretical Maximum Reward: {self.theoretical_rewards}")
         print("---")
 
     def step(self, episode, current_step):
@@ -358,11 +345,7 @@ class SUMOEnvironment:
         reward_tensor = torch.FloatTensor([reward_value])
         next_state_tensor = torch.FloatTensor(next_state_array).unsqueeze(0)
 
-        # Only memorize if action was taken
-        if took_action:
-            self.agent.memorize(state_tensor, action, next_state_tensor, reward_tensor)
-            self.agent.update_q_function()
-
+        # No memorization, no update in testing
         return reward_value, str(action.item()), {
             'q_values': q_values[0],
             'left_queue': next_state_array[0],
@@ -622,39 +605,33 @@ class SUMOEnvironment:
         self.data_saver.save_plot(fig_rewards, 'learning_curve')
 
 # Defined independently of the Environment class
-def run_model(model_number):
-        print(f"\nRunning Model {model_number}")
-        print("=====================================")
-        
-        # Retrieve model configuration
-        if model_number not in MODEL_CONFIGS:
-            print(f"Error: No configuration found for model number {model_number}")
-            raise SystemExit("Program terminated due to missing model configuration.")
-        
-        # Check if model path already exists
-        config = MODEL_CONFIGS[model_number]
-        
-        # Initialize environment (if you want to change lost time, modify lost_time_steps=2 here)
-        model_path = f'./models/{model_number}/trained_model_{SUMO_MODEL}.pth'
-        if os.path.exists(model_path):
-            print(f"Error: Model already exists at {model_path}")
-            print("Please delete the existing model file or specify a different path.")
-            raise SystemExit("Program terminated to prevent overwriting existing model.")   
-    
-        env = SUMOEnvironment(model_number, config) #If you want to change the lost time, change it as follows: (lost_time_steps=2)
-        rewards, all_actions, all_optimal_actions, all_action_results, total_delays = env.run()  
+def run_test_model(model_number):
+    print(f"\nTesting Model {model_number}")
+    print("=====================================")
 
-        # Save the trained model
-        torch.save(env.agent.brain.model.state_dict(), model_path)
-        print(f"Training completed and model {model_number} saved.")
+    if model_number not in MODEL_CONFIGS:
+        print(f"Error: No configuration found for model number {model_number}")
+        raise SystemExit("Program terminated due to missing model configuration.")
 
-        # Print average total delay time for the last few episodes
-        print(f'Average of total delay time for the last 10 episodes = {np.mean(total_delays[-10:])}')
-        print(f'Average of total delay time for the last 8 episodes = {np.mean(total_delays[-8:])}')
-        print(f'Average of total delay time for the last 5 episodes = {np.mean(total_delays[-5:])}')
-        print("=====================================\n")
+    config = MODEL_CONFIGS[model_number]
+    model_path = f"./models/{model_number}/trained_model_{SUMO_MODEL}.pth"  # <-- Fixed here!
+
+    if not os.path.exists(model_path):
+        print(f"Error: Trained model not found at {model_path}")
+        raise SystemExit("Please train the model first.")
+
+    test_case_name = SUMO_MODEL + "_test"
+    env = SUMOEnvironment(model_number, config, sumo_case=test_case_name)
+
+    env.agent.load_model(model_path)
+
+    rewards, all_actions, all_optimal_actions, all_action_results, total_delays = env.run()
+
+    print(f"Testing completed.")
+    print(f"Average total delay time over test episodes = {np.mean(total_delays)}")
+    print("=====================================\n")
 
 
 if __name__ == "__main__":
     for model_num in MODELS_TO_RUN:
-        run_model(model_num)
+        run_test_model(model_num)
