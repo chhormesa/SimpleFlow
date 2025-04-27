@@ -14,8 +14,8 @@ import traci
 os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 
 COMMON_CONFIG = {
-    'MAX_STEPS': 1200,
-    'NUM_EPISODES': 5000,
+    'MAX_STEPS': 12000,
+    'NUM_EPISODES': 5,
     'BATCH_SIZE': 20,
     'CAPACITY': 1000
 }
@@ -24,7 +24,7 @@ SUMO_BINARY='sumo'
 SUMO_PATH = 'sumo'
 
 SUMO_CONFIG = {
-    "SUMOCFG_PATH": f"./{SUMO_PATH}/1",
+    "SUMOCFG_PATH": f"./{SUMO_PATH}/2",
     "SUMO_FILE": "main.sumocfg",  # ← change this per traffic scenario
     "EASTBOUND_LANE_ID": "Node1_2_EB_0",
     "SOUTHBOUND_LANE_ID": "Node3_2_SB_0",
@@ -32,14 +32,14 @@ SUMO_CONFIG = {
 }
 
 MODEL_CONFIGS = {
-    1: {
+    2: {
     "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 100,           # training runs
+    "NUM_EPISODES": 5000,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
-    "EPSILON": 0.1,                # exploration rate for ε-greedy
+    "EPSILON": 1,                # exploration rate for ε-greedy
     "GAMMA": 0.95,
     "STEP": 1,
     "EPSILON_TYPE": 'linear'
@@ -53,7 +53,7 @@ EPSILON_FUNCTIONS = {
     'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)                      
 }
 
-MODELS_TO_RUN = [ 1 ] 
+MODELS_TO_RUN = [ 2 ] 
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
@@ -110,7 +110,6 @@ class DataSaver:
             
             f.write("\nNotes:\n")
             f.write("-"*20 + "\n")
-            f.write("- DISTRIBUTION_TYPE: 'uniform' means constant inflow, 'poisson' means random inflow\n")
             f.write("- *_INFLOW: Number of vehicles entering per time step\n")
             f.write("- *_OUTFLOW: Maximum number of vehicles that can exit per time step\n")
             f.write("- GAMMA: Discount factor for future rewards\n")
@@ -394,10 +393,11 @@ class SUMOEnvironment:
         # === Only decide if at decision step ===
         if self.step_count >= self.next_decision_step:
             action = self.agent.get_action(state_tensor, episode)
+            # print(f'step {current_step} -> ' , state_array, action)
             took_action = True
 
             if action.item() == 1:  # SWITCH
-                print("\n it is switch -> ", self.step_count, "\n")
+                # print("\n it is switch -> ", self.step_count, "\n")
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -411,7 +411,7 @@ class SUMOEnvironment:
 
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
             else:  # KEEP
-                print("\n it is keep -> ", self.step_count, "\n")
+                # print("\n it is keep -> ", self.step_count, "\n")
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
 
         # Continue normal step (either just stepped or after switching)
@@ -462,18 +462,21 @@ class SUMOEnvironment:
 
         for episode in range(NUM_EPISODES):
             # Start SUMO
-            traci.start([
+            sumo_cmd = [
                 SUMO_BINARY,
-                "-c", f"{self.config["SUMOCFG_PATH"]}/{self.config["SUMO_FILE"]}",
+                "-c", f"{self.config['SUMOCFG_PATH']}/{self.config['SUMO_FILE']}",
                 "--step-length", str(self.config.get("STEP", "0.1")),
                 "--start",
                 "--quit-on-end",
                 "--delay", "0",
                 "--lateral-resolution", "0",
-                "--duration-log.statistics", 
-                "--statistic-output", f"{self.config["SUMOCFG_PATH"]}/stats_summary_{episode}.xml"
-            ])
+                "--duration-log.statistics"
+            ]
 
+            if episode % 1 == 0:
+                sumo_cmd += ["--statistic-output", f"{self.config['SUMOCFG_PATH']}/stats_summary_{episode}.xml"]
+
+            traci.start(sumo_cmd)
             self.current_phase = 0
             self.last_switch_step = 0
             self.total_delay_time = 0
