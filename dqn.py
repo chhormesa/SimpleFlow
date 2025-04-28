@@ -43,7 +43,7 @@ MODEL_CONFIGS = {
     1: {
     "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 1000,           # training runs
+    "NUM_EPISODES":1000,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
@@ -58,7 +58,7 @@ MODEL_CONFIGS = {
 EPSILON_FUNCTIONS = {
     'quadratic': lambda episode, num_episodes: 1 - (episode**2/num_episodes**2),            
     'yoshizawa': lambda episode, num_episodes: 5.0 * 10**-5 * (episode - num_episodes)**2,  
-    'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)                      
+    'linear': lambda episode, num_episodes: 0.05                      
 }
 
 MODELS_TO_RUN = [ 1 ] 
@@ -253,6 +253,7 @@ class SUMOEnvironment:
     def __init__(self, model_number, model_specific_config, state_size=5, action_size=2):
         self.step_count = 0
         self.next_decision_step = 0
+        self.prev_total_wait_time = 0
         self.green_phases = [0, 2]             # Real green phases
         self.yellow_phase = 1                  # Yellow phase for all transitions
         self.current_phase_index = 0          # Index into self.green_phases, not direct phase value
@@ -328,6 +329,13 @@ class SUMOEnvironment:
         self.state =  [left_q, right_q, prev_left, prev_right, self.current_phase]
 
         return [left_q, right_q, prev_left, prev_right, self.current_phase]
+    
+    def _get_total_waiting_time(self):
+        """Sum waiting time for all vehicles."""
+        total_wait = 0
+        for veh_id in traci.vehicle.getIDList():
+            total_wait += traci.vehicle.getAccumulatedWaitingTime(veh_id)
+        return total_wait
 
     def step(self, episode, current_step):
         state_array = self.state
@@ -342,7 +350,7 @@ class SUMOEnvironment:
             took_action = True
 
             if action.item() == 1:  # SWITCH
-                # print("\n it is switch -> ", self.step_count, "state -> ", self.state, "\n")
+                # print("\n it is switch -> ", self.step_count, "state -> ", self.state, self.prev_total_wait_time, "\n")
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -356,7 +364,7 @@ class SUMOEnvironment:
 
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
             else:  # KEEP
-                # print("\n it is keep -> ", self.step_count, "state -> ", self.state, "\n")
+                # print("\n it is keep -> ", self.step_count, "state -> ", self.state, self.prev_total_wait_time "\n")
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
         else:
             # print(f'step {current_step}, {self.step_count}  not decision time -> ' , state_array, action)
@@ -368,10 +376,12 @@ class SUMOEnvironment:
 
         # Get next state and reward
         next_state_array = self._get_state()
+        current_wait_time = self._get_total_waiting_time()
         reward_value = -sum(next_state_array[:2])
         reward_tensor = torch.FloatTensor([reward_value])
         next_state_tensor = torch.FloatTensor(next_state_array).unsqueeze(0)
 
+        self.prev_total_wait_time = current_wait_time
         # Only memorize if action was taken
         if took_action:
             self.agent.memorize(state_tensor, action, next_state_tensor, reward_tensor)
@@ -444,7 +454,7 @@ class SUMOEnvironment:
                     episode_left_queue.append(info["left_queue"])
                     episode_right_queue.append(info["right_queue"])
                     current_phase_record.append(self.current_phase)
-                    self.episode_total_queue += -reward  # reward is negative total queue
+                    self.episode_total_queue += info['left_queue'] + info['right_queue']
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -469,10 +479,9 @@ class SUMOEnvironment:
             self.all_episode_current_lanes.append(current_phase_record)
 
             # Console log
-            if episode % 10 == 9 or episode == 0 or episode >= (NUM_EPISODES - 10):
-                print(f"Episode {episode}: Total Reward = {all_episode_sum_q_values[-1]:.2f}, Total Delay = {self.episode_total_queue:.2f}")
-                print(f"Action Results: {episode_actions[:20]} ...")
-                print("---")
+            print(f"Episode {episode}: Total sum q values = {all_episode_sum_q_values[-1]:.2f}, Total queues = {self.episode_total_queue:.2f}")
+            print(f"Action Results: {episode_actions[:20]} ...")
+            print("---")
 
         print("Training finished.")
 
