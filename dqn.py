@@ -20,17 +20,23 @@ SUMO_MODEL = 'hh'
 SUMO_CONFIG_COMMON = {
     "SUMO_FILE": "main.sumocfg",  # ← change this per traffic scenario
     "EASTBOUND_LANE_ID": "Node1_2_EB_0",
+    "EASTBOUND_INFLOW_DET":"Node1_2_EB_0",
+    "EASTBOUND_OUTFLOW_DET":"Node2_4_EB_0",
     "SOUTHBOUND_LANE_ID": "Node3_2_SB_0",
+    "SOUTHBOUND_INFLOW_DET":"Node3_2_SB_0",
+    "SOUTHBOUND_OUTFLOW_DET":"Node2_5_SB_0",
     "TRAFFIC_LIGHT_NODE": "Node2",
 }
 SUMO_CONFIG = {
     'hh': {
         "Description": "High-High traffic flow",
         "SUMOCFG_PATH": f"./{SUMO_PATH}/hh",
+        "FREE_FLOW_TIME": float(550/12)
     },
     'hl': {
         "Description": "High-Low traffic flow",
         "SUMOCFG_PATH": f"./{SUMO_PATH}/hl",
+        "FREE_FLOW_TIME": float(550/12)
     }
 }
 
@@ -41,9 +47,9 @@ COMMON_CONFIG = {
 }
 MODEL_CONFIGS = {
     1: {
-    "STATE_SIZE": 5,               # e.g., [left_q, right_q, prev_left, prev_right, current_phase]
+    "STATE_SIZE": 5,               # e.g., [east_bound_q, south_bound_q, prev_eb, prev_sb, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES":1000,           # training runs
+    "NUM_EPISODES": 300,           # training runs
     "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
@@ -58,7 +64,7 @@ MODEL_CONFIGS = {
 EPSILON_FUNCTIONS = {
     'quadratic': lambda episode, num_episodes: 1 - (episode**2/num_episodes**2),            
     'yoshizawa': lambda episode, num_episodes: 5.0 * 10**-5 * (episode - num_episodes)**2,  
-    'linear': lambda episode, num_episodes: 0.05                      
+    'linear': lambda episode, num_episodes: max(0.05, 1.0 - (0.95/ (0.8 * num_episodes)) * episode)      
 }
 
 MODELS_TO_RUN = [ 1 ] 
@@ -253,7 +259,6 @@ class SUMOEnvironment:
     def __init__(self, model_number, model_specific_config, state_size=5, action_size=2):
         self.step_count = 0
         self.next_decision_step = 0
-        self.prev_total_wait_time = 0
         self.green_phases = [0, 2]             # Real green phases
         self.yellow_phase = 1                  # Yellow phase for all transitions
         self.current_phase_index = 0          # Index into self.green_phases, not direct phase value
@@ -296,47 +301,104 @@ class SUMOEnvironment:
                                NUM_EPISODES-2, 
                                NUM_EPISODES-1]
         self.action_results = []  # List to store action outcomes
+
+        # Keep track of which vehicles we already counted
+        self.counted_inflow = {
+            self.config["EASTBOUND_LANE_ID"]:set(),
+            self.config["SOUTHBOUND_LANE_ID"]:set()
+        }
+        self.counted_outflow = {
+            self.config["EASTBOUND_LANE_ID"]:set(),
+            self.config["SOUTHBOUND_LANE_ID"]:set()
+        }
+
+        # Vehicles count track by time
+        self.inflow_veh = {
+            self.config["EASTBOUND_LANE_ID"]:[],
+            self.config["SOUTHBOUND_LANE_ID"]:[]
+        }
+        self.outflow_veh = {
+            self.config["EASTBOUND_LANE_ID"]:[],
+            self.config["SOUTHBOUND_LANE_ID"]:[]
+        }
         
-        self.lost_time_remaining = 0
-        self.current_lane_history = []
-        self.an_episode_actions = []
         self.all_episode_action_results = []
         self.episode_current_lanes = []
         self.all_episode_total_queue = []  
 
         # Queue-related variables
-        self.left_queue = 0
-        self.right_queue = 0
-        self.left_queue_history = []
-        self.right_queue_history = []
+        self.east_bound_queue = 0
+        self.south_bound_queue = 0
+        self.east_bound_queue_history = []
+        self.south_bound_queue_history = []
 
         # For evaluating total delay time
-        self.total_collected = 0
         self.episode_total_queue = 0
-
-        # Variable used in the reward function
-        self.previous_total_queue = 0
         print("---")
 
-    def _get_state(self):
-        left_q = traci.lane.getLastStepHaltingNumber(self.config['EASTBOUND_LANE_ID'])
-        right_q = traci.lane.getLastStepHaltingNumber(self.config['SOUTHBOUND_LANE_ID'])
-        prev_left = self.left_queue 
-        prev_right = self.right_queue 
+    def get_accum_at_time(self, time_list, target_time):
+        """
+        Get the latest accumulation count at or before the target_time.
+        If no value exists before or at that time, return 0.
+        """
+        closest = 0
+        for record in time_list:
+            if record['time'] <= target_time:
+                closest = record['accumulation']
+            else:
+                break  # Stop early for efficiency (assuming sorted)
+        return closest
 
-        self.left_queue = left_q
-        self.right_queue = right_q
-        self.state =  [left_q, right_q, prev_left, prev_right, self.current_phase]
+    def record_veh(self, step):
+        for direction in ["EASTBOUND", "SOUTHBOUND"]:
+            lane_id = self.config[f"{direction}_LANE_ID"]
+            inflow_det = self.config[f"{direction}_INFLOW_DET"]
+            outflow_det = self.config[f"{direction}_OUTFLOW_DET"]
 
-        return [left_q, right_q, prev_left, prev_right, self.current_phase]
+            # --- Inflow ---
+            for veh in traci.lanearea.getLastStepVehicleIDs(inflow_det):
+                if veh not in self.counted_inflow[lane_id]:
+                    self.counted_inflow[lane_id].add(veh)
+                    self.inflow_veh[lane_id].append({
+                        "time": step,
+                        "accumulation": len(self.counted_inflow[lane_id])
+                    })
+
+            # --- Outflow ---
+            for veh in traci.lanearea.getLastStepVehicleIDs(outflow_det):
+                if veh not in self.counted_outflow[lane_id]:
+                    self.counted_outflow[lane_id].add(veh)
+                    self.outflow_veh[lane_id].append({
+                        "time": step,
+                        "accumulation": len(self.counted_outflow[lane_id])
+                    })
     
-    def _get_total_waiting_time(self):
-        """Sum waiting time for all vehicles."""
-        total_wait = 0
-        for veh_id in traci.vehicle.getIDList():
-            total_wait += traci.vehicle.getAccumulatedWaitingTime(veh_id)
-        return total_wait
+    def _get_state(self, step):
+        T_f = self.config['FREE_FLOW_TIME']
+        t_adjusted = step - T_f
 
+        inflow_eb = self.inflow_veh[self.config['EASTBOUND_LANE_ID']]
+        outflow_eb = self.outflow_veh[self.config['EASTBOUND_LANE_ID']]
+        inflow_sb = self.inflow_veh[self.config['SOUTHBOUND_LANE_ID']]
+        outflow_sb = self.outflow_veh[self.config['SOUTHBOUND_LANE_ID']]
+
+        A_eb = self.get_accum_at_time(inflow_eb, t_adjusted)
+        D_eb = self.get_accum_at_time(outflow_eb, step)
+        queue_eb = max(A_eb - D_eb, 0)
+
+        A_sb = self.get_accum_at_time(inflow_sb, t_adjusted)
+        D_sb = self.get_accum_at_time(outflow_sb, step)
+        queue_sb = max(A_sb - D_sb, 0)
+
+        prev_eb = self.east_bound_queue
+        prev_sb = self.south_bound_queue
+
+        self.east_bound_queue = queue_eb
+        self.south_bound_queue = queue_sb
+        self.state = [queue_eb, queue_sb, prev_eb, prev_sb, self.current_phase]
+
+        return self.state
+    
     def step(self, episode, current_step):
         state_array = self.state
         state_tensor = torch.FloatTensor(state_array).unsqueeze(0)
@@ -350,7 +412,7 @@ class SUMOEnvironment:
             took_action = True
 
             if action.item() == 1:  # SWITCH
-                # print("\n it is switch -> ", self.step_count, "state -> ", self.state, self.prev_total_wait_time, "\n")
+                print("\n it is switch -> ", self.step_count, ", state -> ", self.state, "\n")
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -364,7 +426,7 @@ class SUMOEnvironment:
 
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
             else:  # KEEP
-                # print("\n it is keep -> ", self.step_count, "state -> ", self.state, self.prev_total_wait_time "\n")
+                print("\n it is keep -> ", self.step_count, ", state -> ", self.state, "\n")
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
         else:
             # print(f'step {current_step}, {self.step_count}  not decision time -> ' , state_array, action)
@@ -373,15 +435,14 @@ class SUMOEnvironment:
         # Continue normal step (either just stepped or after switching)
         traci.simulationStep()
         self.step_count += 1
+        self.record_veh(self.step_count)
 
         # Get next state and reward
-        next_state_array = self._get_state()
-        current_wait_time = self._get_total_waiting_time()
-        reward_value = -sum(next_state_array[:2])
+        next_state_array = self._get_state(self.step_count)
+        reward_value = - next_state_array[0] - next_state_array[1]
         reward_tensor = torch.FloatTensor([reward_value])
         next_state_tensor = torch.FloatTensor(next_state_array).unsqueeze(0)
 
-        self.prev_total_wait_time = current_wait_time
         # Only memorize if action was taken
         if took_action:
             self.agent.memorize(state_tensor, action, next_state_tensor, reward_tensor)
@@ -389,8 +450,8 @@ class SUMOEnvironment:
 
         return took_action, reward_value, str(action.item()), {
             'q_values': q_values[0],
-            'left_queue': next_state_array[0],
-            'right_queue': next_state_array[1]
+            'east_bound_queue': next_state_array[0],
+            'south_bound_queue': next_state_array[1]
         }
 
     def run(self):
@@ -402,8 +463,8 @@ class SUMOEnvironment:
         all_episode_sum_q_values = []
         self.all_episode_observed_step = []
         self.q_value_history = []
-        self.left_queue_history = []
-        self.right_queue_history = []
+        self.east_bound_queue_history = []
+        self.south_bound_queue_history = []
         self.all_episode_action_results = []
         self.all_episode_total_queue = []
         self.all_episode_current_lanes = []
@@ -429,16 +490,16 @@ class SUMOEnvironment:
             self.state = np.zeros(self.state_size) # Reset state
             self.current_phase = 0
             self.episode_total_queue = 0
-            self.left_queue = 0
-            self.right_queue = 0
+            self.east_bound_queue = 0
+            self.south_bound_queue = 0
             self.step_count = 0
             self.next_decision_step = 0
 
             episode_observed_step = []
             episode_q_values = []
             episode_actions = []
-            episode_left_queue = []
-            episode_right_queue = []
+            episode_east_bound_queue = []
+            episode_south_bound_queue = []
             current_phase_record = []
 
             while True:
@@ -451,10 +512,10 @@ class SUMOEnvironment:
                     episode_observed_step.append(self.step_count - 1) 
                     episode_q_values.append(info["q_values"])
                     episode_actions.append(action_result)
-                    episode_left_queue.append(info["left_queue"])
-                    episode_right_queue.append(info["right_queue"])
+                    episode_east_bound_queue.append(info["east_bound_queue"])
+                    episode_south_bound_queue.append(info["south_bound_queue"])
                     current_phase_record.append(self.current_phase)
-                    self.episode_total_queue += info['left_queue'] + info['right_queue']
+                    self.episode_total_queue += info['east_bound_queue'] + info['south_bound_queue']
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -472,8 +533,8 @@ class SUMOEnvironment:
             all_episode_sum_q_values.append(total)
             self.all_episode_observed_step.append(episode_observed_step)
             self.q_value_history.append(episode_q_values)
-            self.left_queue_history.append(episode_left_queue)
-            self.right_queue_history.append(episode_right_queue)
+            self.east_bound_queue_history.append(episode_east_bound_queue)
+            self.south_bound_queue_history.append(episode_south_bound_queue)
             self.all_episode_action_results.append(episode_actions)
             self.all_episode_total_queue.append(self.episode_total_queue)
             self.all_episode_current_lanes.append(current_phase_record)
@@ -552,14 +613,14 @@ class SUMOEnvironment:
         fig = plt.figure(figsize=(20, 15))
         queue_labels = ['queue (route_we)', 'queue (route_ns)']
         for i, episode in enumerate(self.episodes_to_plot):
-            if episode < len(self.left_queue_history):
+            if episode < len(self.east_bound_queue_history):
                 ax = fig.add_subplot(len(self.episodes_to_plot), 1, i+1)
-                queue_steps = range(len(self.left_queue_history[episode]))
-                steps = range(len(self.left_queue_history[episode])-1)
+                queue_steps = range(len(self.east_bound_queue_history[episode]))
+                steps = range(len(self.east_bound_queue_history[episode])-1)
                 
                 # Plot queue lengths
-                ax.plot(queue_steps, self.left_queue_history[episode], label=queue_labels[0])
-                ax.plot(queue_steps, self.right_queue_history[episode], label=queue_labels[1])
+                ax.plot(queue_steps, self.east_bound_queue_history[episode], label=queue_labels[0])
+                ax.plot(queue_steps, self.south_bound_queue_history[episode], label=queue_labels[1])
                 
                 # Fill selected lane
                 selected_lane = self.all_episode_current_lanes[episode]
@@ -584,7 +645,7 @@ class SUMOEnvironment:
                 ax.set_ylabel('Queue length / Current lane')
                 ax.legend()
                 ax.set_xlim(0, len(steps))
-                ax.set_ylim(-0.5, max(max(self.left_queue_history[episode]), max(self.right_queue_history[episode])) + 0.5)
+                ax.set_ylim(-0.5, max(max(self.east_bound_queue_history[episode]), max(self.south_bound_queue_history[episode])) + 0.5)
         plt.tight_layout()
         return fig
 
@@ -623,8 +684,8 @@ class SUMOEnvironment:
         queue_data = []
         for episode, steps in enumerate(self.all_episode_observed_step):
             episode_data = pd.DataFrame({
-                'queue_left': self.left_queue_history[episode],
-                'queue_right': self.right_queue_history[episode],
+                'queue_left': self.east_bound_queue_history[episode],
+                'queue_right': self.south_bound_queue_history[episode],
                 'current_phase': self.all_episode_current_lanes[episode],
                 'action': self.all_episode_action_results[episode],
                 'episode': episode,

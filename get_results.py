@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 
 def visualize_results(model_number, sumo_case):
     # Define paths
-    base_dir = f"./results/{model_number}/{sumo_case}_5000"
-    output_dir = f"./results/{model_number}/{sumo_case}_5000_visualized"
+    base_dir = f"./results/{model_number}/{sumo_case}"
+    output_dir = f"./results/{model_number}/{sumo_case}"
     
     os.makedirs(output_dir, exist_ok=True)
 
@@ -40,7 +40,7 @@ def visualize_results(model_number, sumo_case):
     print(f"Saved: {qvalue_evolution_path}")
 
     # === 3. Plot: Queue Length History for Specific Episodes ===
-    selected_episodes = [0, 1000, 3000, 4999]
+    selected_episodes = [0, 1000, 2000, 3000, 4000, 4999]
     for ep in selected_episodes:
         if ep in queue_df['episode'].unique():
             episode_queue = queue_df[queue_df['episode'] == ep]
@@ -65,14 +65,14 @@ def visualize_results(model_number, sumo_case):
     color = 'tab:blue'
     ax1.set_xlabel('Episode')
     ax1.set_ylabel('Total Reward (Q-Value Sum)', color=color)
-    ax1.plot(rewards_df['episode'], rewards_df['total_reward'], color=color, label="Total Reward")
+    ax1.plot(rewards_df['episode'], rewards_df['sum_q_values'], color=color, label="Total Reward")
     ax1.tick_params(axis='y', labelcolor=color)
     ax1.grid(True)
 
     ax2 = ax1.twinx()
     color = 'tab:red'
-    ax2.set_ylabel('Total Delay', color=color)
-    ax2.plot(rewards_df['episode'], rewards_df['total_delay'], color=color, label="Total Delay")
+    ax2.set_ylabel('Total Sum Queues', color=color)
+    ax2.plot(rewards_df['episode'], rewards_df['sum_queues'], color=color, label="Total Sum Queues")
     ax2.tick_params(axis='y', labelcolor=color)
 
     fig.tight_layout()
@@ -86,4 +86,4 @@ def visualize_results(model_number, sumo_case):
 
 if __name__ == "__main__":
     # Example call
-    visualize_results(model_number=1, sumo_case="hl")
+    visualize_results(model_number=1, sumo_case="hl_5000_q")
