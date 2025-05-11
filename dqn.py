@@ -5,7 +5,7 @@ from torch import optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import random
-from collections import namedtuple # 値とフィールド名をペアで格納するnamedtupleを使用
+from collections import Counter, namedtuple # 値とフィールド名をペアで格納するnamedtupleを使用
 import os
 from statistics import mean
 import pandas as pd
@@ -16,6 +16,13 @@ os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 SUMO_BINARY='sumo'
 SUMO_PATH = 'sumo'
 SUMO_MODEL = 'hh'
+
+MAP_PHASE = {
+    0: 0,
+    2: 1,
+}
+
+OBSERVE_DECISION = 250
 
 SUMO_CONFIG_COMMON = {
     "SUMO_FILE": "main.sumocfg",  # ← change this per traffic scenario
@@ -31,17 +38,17 @@ SUMO_CONFIG = {
     'hh': {
         "Description": "High-High traffic flow",
         "SUMOCFG_PATH": f"./{SUMO_PATH}/hh",
-        "FREE_FLOW_TIME": float(550/12)
+        "FREE_FLOW_TIME": float(600/12)
     },
     'hl': {
         "Description": "High-Low traffic flow",
         "SUMOCFG_PATH": f"./{SUMO_PATH}/hl",
-        "FREE_FLOW_TIME": float(550/12)
+        "FREE_FLOW_TIME": float(600/12)
     }
 }
 
 COMMON_CONFIG = {
-    'MAX_STEPS': 12000,
+    'MAX_STEPS': 1200,
     'BATCH_SIZE': 20,
     'CAPACITY': 1000
 }
@@ -49,8 +56,8 @@ MODEL_CONFIGS = {
     1: {
     "STATE_SIZE": 5,               # e.g., [east_bound_q, south_bound_q, prev_eb, prev_sb, current_phase]
     "ACTION_SIZE": 2,              # 0: keep, 1: switch
-    "NUM_EPISODES": 300,           # training runs
-    "MAX_STEPS": 120000,            # total SUMO steps per episode (20 minutes at 0.1s step)
+    "NUM_EPISODES": 5000,           # training runs
+    "MAX_STEPS": 1500,            # total SUMO steps per episode (20 minutes at 0.1s step)
     "DECISION_STEP": 5,
     "LOST_TIME_STEPS": 5,         # 5 seconds = 1 steps (SUMO step-length = 0.1s)
     "EPSILON": 1,                # exploration rate for ε-greedy
@@ -64,7 +71,7 @@ MODEL_CONFIGS = {
 EPSILON_FUNCTIONS = {
     'quadratic': lambda episode, num_episodes: 1 - (episode**2/num_episodes**2),            
     'yoshizawa': lambda episode, num_episodes: 5.0 * 10**-5 * (episode - num_episodes)**2,  
-    'linear': lambda episode, num_episodes: max(0.05, 1.0 - (0.95/ (0.8 * num_episodes)) * episode)      
+    'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)      
 }
 
 MODELS_TO_RUN = [ 1 ] 
@@ -285,7 +292,7 @@ class SUMOEnvironment:
         self.state_size = state_size  # Number of state features (e.g., recent history of left/right queues)
         self.action_size = action_size  # Number of actions
         self.agent = Agent(self.state_size, self.action_size, self.config) # Create agent that operates in the environment
-        self.state = np.zeros(self.state_size)
+        self.state = [0,0,0,0,0]
         self.q_value_history = []  # List to store Q-value history
         self.all_episode_observed_step = []
         
@@ -327,10 +334,15 @@ class SUMOEnvironment:
         self.all_episode_total_queue = []  
 
         # Queue-related variables
-        self.east_bound_queue = 0
-        self.south_bound_queue = 0
+        self.last_decision_queue = {
+            'east_bound':0,
+            'south_bound':0
+        }
+
         self.east_bound_queue_history = []
         self.south_bound_queue_history = []
+        self.reward_history = []
+        self.state_visit_counter = Counter()
 
         # For evaluating total delay time
         self.episode_total_queue = 0
@@ -373,9 +385,9 @@ class SUMOEnvironment:
                         "accumulation": len(self.counted_outflow[lane_id])
                     })
     
-    def _get_state(self, step):
+    def _update_state(self, step):
         T_f = self.config['FREE_FLOW_TIME']
-        t_adjusted = step - T_f
+        t_adjusted = max(step - T_f, 0)
 
         inflow_eb = self.inflow_veh[self.config['EASTBOUND_LANE_ID']]
         outflow_eb = self.outflow_veh[self.config['EASTBOUND_LANE_ID']]
@@ -390,68 +402,80 @@ class SUMOEnvironment:
         D_sb = self.get_accum_at_time(outflow_sb, step)
         queue_sb = max(A_sb - D_sb, 0)
 
-        prev_eb = self.east_bound_queue
-        prev_sb = self.south_bound_queue
-
-        self.east_bound_queue = queue_eb
-        self.south_bound_queue = queue_sb
-        self.state = [queue_eb, queue_sb, prev_eb, prev_sb, self.current_phase]
-
-        return self.state
+        self.state = [queue_eb, queue_sb, self.last_decision_queue['east_bound'], self.last_decision_queue['south_bound'], MAP_PHASE[self.current_phase]]
     
     def step(self, episode, current_step):
-        state_array = self.state
-        state_tensor = torch.FloatTensor(state_array).unsqueeze(0)
+        state_tensor = torch.FloatTensor(self.state).unsqueeze(0)
         q_values = self.agent.get_q_values(state_tensor)
         action = torch.tensor([[0]])  # default keep
         took_action = False
 
         # === Only decide if at decision step ===
         if self.step_count >= self.next_decision_step:
+            self.last_decision_queue['east_bound'] = self.state[0]
+            self.last_decision_queue['south_bound'] = self.state[1]
+
             action = self.agent.get_action(state_tensor, episode)
             took_action = True
 
+            self.agent.memorize(torch.FloatTensor(self.pending_transition["state"]).unsqueeze(0), 
+                                self.pending_transition["action"],  
+                                torch.FloatTensor(self.state).unsqueeze(0), 
+                                torch.FloatTensor([-self.state[0]-self.state[1]]))
+            self.agent.update_q_function()
+
+            if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  # Only log every 100 episodes
+                self.state_visit_counter[tuple(self.pending_transition["state"])] += 1
+                self.decision_log.append({
+                    "episode": episode,
+                    "step": self.pending_transition["step"],
+                    "state": self.pending_transition["state"],
+                    "action": "SWITCH" if self.pending_transition["action"] == 1 else "KEEP",
+                    "next_state": self.state,
+                    "reward": -self.state[0]-self.state[1],
+                    "q_keep": q_values[0][0].item(),
+                    "q_switch": q_values[0][1].item(),
+                    "current_phase": MAP_PHASE[self.current_phase],
+                    "next_switch": traci.trafficlight.getNextSwitch(self.config["TRAFFIC_LIGHT_NODE"])
+                })
+
+            self.pending_transition = {
+                "step": self.step_count,
+                "state": self.state,
+                "action": action
+            }
+
             if action.item() == 1:  # SWITCH
-                print("\n it is switch -> ", self.step_count, ", state -> ", self.state, "\n")
                 # Yellow phase
-                traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.yellow_phase)
+                traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase + self.yellow_phase)
                 for _ in range(self.lost_time_steps):
                     traci.simulationStep()
                     self.step_count += 1
+                    self.record_veh(self.step_count)
+                    self._update_state(self.step_count)
 
                 # Next green phase
                 self.current_phase_index = (self.current_phase_index + 1) % len(self.green_phases)
                 self.current_phase = self.green_phases[self.current_phase_index]
-                traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
-
+                # traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
+                
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
             else:  # KEEP
-                print("\n it is keep -> ", self.step_count, ", state -> ", self.state, "\n")
+                traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
                 self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
         else:
-            # print(f'step {current_step}, {self.step_count}  not decision time -> ' , state_array, action)
             pass
 
         # Continue normal step (either just stepped or after switching)
         traci.simulationStep()
         self.step_count += 1
         self.record_veh(self.step_count)
+        self._update_state(self.step_count)
 
-        # Get next state and reward
-        next_state_array = self._get_state(self.step_count)
-        reward_value = - next_state_array[0] - next_state_array[1]
-        reward_tensor = torch.FloatTensor([reward_value])
-        next_state_tensor = torch.FloatTensor(next_state_array).unsqueeze(0)
-
-        # Only memorize if action was taken
-        if took_action:
-            self.agent.memorize(state_tensor, action, next_state_tensor, reward_tensor)
-            self.agent.update_q_function()
-
-        return took_action, reward_value, str(action.item()), {
+        return took_action, -self.state[0]-self.state[1], str(action.item()), {
             'q_values': q_values[0],
-            'east_bound_queue': next_state_array[0],
-            'south_bound_queue': next_state_array[1]
+            'east_bound_queue': self.state[0],
+            'south_bound_queue': self.state[1]
         }
 
     def run(self):
@@ -468,30 +492,29 @@ class SUMOEnvironment:
         self.all_episode_action_results = []
         self.all_episode_total_queue = []
         self.all_episode_current_lanes = []
+        self.decision_log = []  # For selected episodes
 
-        for episode in range(NUM_EPISODES):
+        for episode in range(NUM_EPISODES + 1):
             # Start SUMO
             sumo_cmd = [
                 SUMO_BINARY,
                 "-c", f"{self.config['SUMOCFG_PATH']}/{self.config['SUMO_FILE']}",
                 "--step-length", str(self.config.get("STEP", "0.1")),
+                "--random",
                 "--start",
                 "--quit-on-end",
-                "--delay", "0",
+                "--delay", "10",
                 "--lateral-resolution", "0",
                 "--duration-log.statistics"
             ]
 
-            if episode % 50 == 0:
+            if episode % 100 == 0:
                 stats_output_path = os.path.join(self.data_saver.output_dir, f"stats_summary_{episode}.xml")
                 sumo_cmd += ["--statistic-output", stats_output_path]
 
             traci.start(sumo_cmd)
-            self.state = np.zeros(self.state_size) # Reset state
-            self.current_phase = 0
+            self.state = [0,0,0,0,0] # Reset state
             self.episode_total_queue = 0
-            self.east_bound_queue = 0
-            self.south_bound_queue = 0
             self.step_count = 0
             self.next_decision_step = 0
 
@@ -501,8 +524,18 @@ class SUMOEnvironment:
             episode_east_bound_queue = []
             episode_south_bound_queue = []
             current_phase_record = []
+            self.current_phase = traci.trafficlight.getPhase(self.config["TRAFFIC_LIGHT_NODE"])
+            self.pending_transition = {
+                "step": 0,
+                "state": [0,0,0,0,0],
+                "action": torch.tensor([[0]])
+            }
+            self.last_decision_queue = {
+                'east_bound':0,
+                'south_bound':0
+            }
 
-            while True:
+            while self.step_count < MAX_STEPS:
                 # Step through simulation
                 took_action, reward, action_result, info = self.step(episode, self.step_count)
 
@@ -514,8 +547,12 @@ class SUMOEnvironment:
                     episode_actions.append(action_result)
                     episode_east_bound_queue.append(info["east_bound_queue"])
                     episode_south_bound_queue.append(info["south_bound_queue"])
-                    current_phase_record.append(self.current_phase)
+                    current_phase_record.append(MAP_PHASE[self.current_phase])
                     self.episode_total_queue += info['east_bound_queue'] + info['south_bound_queue']
+                    self.reward_history.append({
+                        "step": self.step_count,
+                        "reward": reward
+                    })
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -541,15 +578,42 @@ class SUMOEnvironment:
 
             # Console log
             print(f"Episode {episode}: Total sum q values = {all_episode_sum_q_values[-1]:.2f}, Total queues = {self.episode_total_queue:.2f}")
+            print(f"Epsilon -> ", self.agent.brain.epsilon_func(episode, self.config['NUM_EPISODES']))
             print(f"Action Results: {episode_actions[:20]} ...")
             print("---")
+
+            # === Save inflow/outflow data ===
+            if episode % OBSERVE_DECISION == 0:
+                episode_dir = os.path.join(self.data_saver.output_dir, f"episode_{episode}")
+                os.makedirs(episode_dir, exist_ok=True)
+
+                rewards_path = os.path.join(episode_dir, "reward_history.csv")
+                pd.DataFrame(self.reward_history).to_csv(rewards_path, index=False)
+                
+                decision_df = pd.DataFrame(self.decision_log)
+                decision_df.to_csv(os.path.join(episode_dir, f"debug_decision_log_{episode}.csv"), index=False)
+                print("Saved: debug_decision_log.csv")
+
+                for direction in ["EASTBOUND", "SOUTHBOUND"]:
+                    lane_id = self.config[f"{direction}_LANE_ID"]
+                    inflow_df = pd.DataFrame(self.inflow_veh[lane_id])
+                    inflow_df.to_csv(os.path.join(episode_dir, f"inflow_veh_{lane_id}_{episode}.csv"), index=False)
+                    outflow_df = pd.DataFrame(self.outflow_veh[lane_id])
+                    outflow_df.to_csv(os.path.join(episode_dir, f"outflow_veh_{lane_id}_{episode}.csv"), index=False)
+
+                state_visit_df = pd.DataFrame([
+                    {"state": str(state), "visits": count}
+                    for state, count in self.state_visit_counter.items()
+                ])
+                state_visit_df.to_csv(os.path.join(episode_dir, f"state_visits_ep{episode}.csv"), index=False)
+                print(f"Saved state visit log for episode {episode}")
+            self.reward_history = []
+            self.decision_log = []
 
         print("Training finished.")
 
         # === Save Results ===
         self._save_training_results(all_episode_sum_q_values)
-        print(self.all_episode_observed_step)
-
         return all_episode_sum_q_values, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_queue
 
     def plot_q_values(self):

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- generated on 2025-05-08 18:01:16 by Eclipse SUMO netedit Version 1.22.0
+<!-- generated on 2025-05-09 16:30:43 by Eclipse SUMO netedit Version 1.22.0
 <neteditConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/neteditConfiguration.xsd">
 
     <input>
@@ -52,8 +52,8 @@
         <lane id=":Node2_3_0" index="0" speed="6.51" length="9.03" shape="98.38,-4.76 98.73,-7.21 99.78,-8.96 101.53,-10.01 103.98,-10.36"/>
     </edge>
 
-    <edge id="Node1_2_EB" from="Node1" to="Node2" priority="-1" length="600.00">
-        <lane id="Node1_2_EB_0" index="0" speed="13.89" length="600.00" shape="-83.74,-10.36 92.78,-10.36"/>
+    <edge id="Node1_2_EB" from="Node1" to="Node2" priority="-1" length="650.00">
+        <lane id="Node1_2_EB_0" index="0" speed="13.89" length="650.00" shape="-83.74,-10.36 92.78,-10.36"/>
     </edge>
     <edge id="Node2_4_EB" from="Node2" to="Node4" priority="-1" length="150.00">
         <lane id="Node2_4_EB_0" index="0" speed="13.89" length="150.00" shape="103.98,-10.36 237.67,-10.36"/>
@@ -61,14 +61,14 @@
     <edge id="Node2_5_SB" from="Node2" to="Node5" priority="-1" length="140.00">
         <lane id="Node2_5_SB_0" index="0" speed="13.89" length="140.00" shape="98.37,-15.96 98.30,-120.25"/>
     </edge>
-    <edge id="Node3_2_SB" from="Node3" to="Node2" priority="-1" length="600.00">
-        <lane id="Node3_2_SB_0" index="0" speed="13.89" length="600.00" shape="98.33,175.76 98.38,-4.76"/>
+    <edge id="Node3_2_SB" from="Node3" to="Node2" priority="-1" length="650.00">
+        <lane id="Node3_2_SB_0" index="0" speed="13.89" length="650.00" shape="98.33,175.76 98.38,-4.76"/>
     </edge>
 
     <tlLogic id="Node2" type="static" programID="0" offset="0">
-        <phase duration="32" state="GGrr"/>
+        <phase duration="23" state="GGrr"/>
         <phase duration="5"  state="yyrr"/>
-        <phase duration="32" state="rrGG"/>
+        <phase duration="23" state="rrGG"/>
         <phase duration="5"  state="rryy"/>
     </tlLogic>
 
