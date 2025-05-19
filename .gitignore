@@ -1,2 +1,3 @@
 sumo/**/stats_summary*.xml
 results
+results_archive

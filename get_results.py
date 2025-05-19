@@ -40,7 +40,7 @@ def visualize_results(model_number, sumo_case):
     print(f"Saved: {qvalue_evolution_path}")
 
     # === 3. Plot: Queue Length History for Specific Episodes ===
-    selected_episodes = [0, 1000, 2000, 3000, 4000, 4999]
+    selected_episodes = [0, 1200, 2400, 3300, 3900, 4800]
     for ep in selected_episodes:
         if ep in queue_df['episode'].unique():
             episode_queue = queue_df[queue_df['episode'] == ep]
@@ -86,4 +86,4 @@ def visualize_results(model_number, sumo_case):
 
 if __name__ == "__main__":
     # Example call
-    visualize_results(model_number=1, sumo_case="hl_5000_q")
+    visualize_results(model_number=1, sumo_case="hh_")
