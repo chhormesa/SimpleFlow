@@ -1,3 +1,4 @@
 sumo/**/stats_summary*.xml
+models
 results
 results_archive

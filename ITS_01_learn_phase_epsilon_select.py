@@ -117,13 +117,13 @@ class DataSaver:
         print(f"Saved network structure to {structure_path}")
 
     def save_plot(self, fig, filename):
-        path = os.path.join(self.output_dir, f"{filename}.pdf")
+        path = os.path.join(self.output_dir, f"model{model_num}_{filename}.pdf")
         fig.savefig(path)
         plt.close(fig)
         print(f"Saved plot to {path}")
 
     def save_data(self, data, filename):
-        path = os.path.join(self.output_dir, f"{filename}.csv")
+        path = os.path.join(self.output_dir, f"model{model_num}_{filename}.csv")
         if isinstance(data, pd.DataFrame):
             data.to_csv(path, index=False)
         else:
@@ -715,52 +715,6 @@ class SUMOEnvironment:
 
         print("Training finished.")
 
-        self.data_saver.save_data(self.waiting_time_history, 'waiting_time')
-
-        # Save reward data
-        rewards_df = pd.DataFrame({
-            'episode': range(NUM_EPISODES),
-            'total_reward': self.total_rewards,
-            'total_delay': self.all_episode_total_queue
-        })
-        self.data_saver.save_data(rewards_df, 'rewards')
-        
-        # Save Q-value history
-        q_values_data = []
-        for episode, q_values in enumerate(self.q_value_history):
-            episode_data = pd.DataFrame(q_values, columns=['Q_keep', 'Q_switch'])
-            episode_data['episode'] = episode
-            episode_data['step'] = range(len(q_values))
-            q_values_data.append(episode_data)
-        q_values_df = pd.concat(q_values_data, ignore_index=True)
-        self.data_saver.save_data(q_values_df, 'q_values')
-        
-        # Save queue data
-        queue_data = []
-        for episode in range(len(self.east_bound_queue_history)):
-            # Use the length of left_queue_history (should be episode + 1)
-            episode_length = len(self.east_bound_queue_history[episode])
-            
-            # Add 'initial' to align the action list to length (episode + 1)
-            actions = self.all_episode_action_results[episode]
-            
-            # current_lanes should also be of length (episode + 1)
-            current_lanes = self.all_episode_current_lanes[episode]
-            
-            # Create DataFrame (all should have the same length)
-            episode_data = pd.DataFrame({
-                'queue (route_eb)': self.east_bound_queue_history[episode], # Length: episode + 1
-                'queue (route_nb)': self.south_bound_queue_history[episode],  # Length: episode + 1
-                'current_lane': current_lanes,  # Length: episode + 1
-                'action': actions,  # Length: episode + 1
-                'episode': ['initial' if i == 0 else episode for i in range(episode_length)],  # Add initial
-                'step': ['initial' if i == 0 else i-1 for i in range(episode_length)]  # Add initial
-            })
-            queue_data.append(episode_data)
-
-        queue_df = pd.concat(queue_data, ignore_index=True)
-        self.data_saver.save_data(queue_df, 'queue_history')
-
         # Save plots
         # Learning curve
         fig_rewards = plt.figure(figsize=(20, 15))
@@ -774,16 +728,11 @@ class SUMOEnvironment:
         self.data_saver.save_plot(self.plot_total_delays(), 'total_delays')
         self.data_saver.save_plot(self.plot_queue_lengths(), 'queue_lengths')
         self.data_saver.save_plot(self.plot_q_value(), 'q_values_selected_episodes')
-        q_values_fig = self.plot_q_values()
-        self.data_saver.save_plot(q_values_fig, 'q_values_all_episodes')
+        self.data_saver.save_plot(self.plot_q_values(), 'q_values_all_episodes')
         
-
         # === Save Results ===
-        waiting_time_df = pd.DataFrame(self.waiting_time_history)
-        waiting_time_df.to_csv(os.path.join(episode_dir, f"waiting_time_history.csv"), index=False)
-
         print("Saved: debug_decision_log.csv")
-        self._save_training_results(self.all_episode_sum_q_values)
+        self._save_training_results()
         return self.all_episode_sum_q_values, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_queue
 
     def plot_q_values(self):
@@ -896,14 +845,17 @@ class SUMOEnvironment:
         plt.tight_layout()
         return fig
 
-    def _save_training_results(self, all_episode_sum_q_values):
+    def _save_training_results(self):
+        # === Saving Waiting history by curve ===
+        self.data_saver.save_data(self.waiting_time_history, 'waiting_time')
+
+        # === Sum Q value and Sum queues per Decision ===
         rewards_df = pd.DataFrame({
-            'episode': range(len(all_episode_sum_q_values)),
-            'sum_q_values': all_episode_sum_q_values,
+            'episode': range(len(self.all_episode_sum_q_values)),
+            'sum_q_values': self.all_episode_sum_q_values,
             'sum_queues': self.all_episode_total_queue
         })
         self.data_saver.save_data(rewards_df, 'rewards')
-
         # === Q-values per Decision ===
         q_values_data = []
         for episode, (q_values, steps) in enumerate(zip(self.q_value_history, self.all_episode_observed_step)):
@@ -913,7 +865,7 @@ class SUMOEnvironment:
             q_values_data.append(episode_data)
         q_values_df = pd.concat(q_values_data, ignore_index=True)
         self.data_saver.save_data(q_values_df, 'q_values')
-
+        
         # === Queue and Actions per Decision ===
         queue_data = []
         for episode, steps in enumerate(self.all_episode_observed_step):
@@ -931,11 +883,11 @@ class SUMOEnvironment:
 
         # Plot
         fig_rewards = plt.figure(figsize=(20, 10))
-        plt.plot(all_episode_sum_q_values)
+        plt.plot(self.all_episode_sum_q_values)
         plt.title("Sum Q values over Episodes")
         plt.xlabel("Episode")
         plt.ylabel("Sum Q value")
-        self.data_saver.save_plot(fig_rewards, 'learning_curve')
+        self.data_saver.save_plot(fig_rewards, 'sum_q_value_curve')
     
     def plot_total_delays(self):
         '''Plot total delay time per episode'''
