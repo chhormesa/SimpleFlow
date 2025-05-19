@@ -23,7 +23,7 @@ MAP_PHASE = {
     2: 1,
 }
 
-OBSERVE_DECISION = 250
+OBSERVE_DECISION = 1
 STEP = 1
 FREE_FLOW_SPEED = 12.59
 
@@ -54,7 +54,7 @@ SUMO_CONFIG = {
 COMMON_CONFIG = {
     "STEP": STEP,
     'MAX_STEPS': int(6000/STEP),
-    'NUM_EPISODES': 2501,
+    'NUM_EPISODES': 5,
     'BATCH_SIZE': 20,
     'CAPACITY': 1000,
     "STATE_SIZE": 5,               # e.g., [east_bound_q, south_bound_q, prev_eb, prev_sb, current_phase]
@@ -476,14 +476,16 @@ class SUMOEnvironment:
             self.last_decision_queue['east_bound'] = self.state[0]
             self.last_decision_queue['south_bound'] = self.state[1]
 
-            action = self.agent.get_action(state_tensor, episode)
+            action_tensor = self.agent.get_action(state_tensor, episode)
+            action = action_tensor.item()
             took_action = True
 
-            self.agent.memorize(torch.FloatTensor(pending["state"]).unsqueeze(0), 
-                                pending["action"],  
-                                torch.FloatTensor(self.state).unsqueeze(0), 
-                                torch.FloatTensor([-self.state[0]-self.state[1]]))
-            self.agent.update_q_function()
+            if pending['action'] != "initial":
+                self.agent.memorize(torch.FloatTensor(pending["state"]).unsqueeze(0), 
+                                    torch.LongTensor([[pending["action"]]]),  
+                                    torch.FloatTensor(self.state).unsqueeze(0), 
+                                    torch.FloatTensor([-self.state[0]-self.state[1]]))
+                self.agent.update_q_function()
 
             if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  
                 self.state_visit_counter[tuple(pending["state"])] += 1
@@ -509,7 +511,7 @@ class SUMOEnvironment:
                 "phase": MAP_PHASE[self.current_phase]
             }
 
-            if action.item() == 1:  # SWITCH
+            if action == 1:  # SWITCH
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase + self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -536,7 +538,9 @@ class SUMOEnvironment:
         self.record_veh(self.step_count)
         self._update_state(self.step_count)
 
-        return took_action, -self.state[0]-self.state[1], str(action.item()), {
+        return took_action, -self.state[0]-self.state[1], {
+            'step': pending["step"],
+            'action': pending['action'],
             'q_values': q_values[0],
             'east_bound_queue': pending["state"][0],
             'south_bound_queue': pending["state"][1],
@@ -615,8 +619,9 @@ class SUMOEnvironment:
             self.current_phase = traci.trafficlight.getPhase(self.config["TRAFFIC_LIGHT_NODE"])
             self.pending_transition = {
                 "step": 0,
+                "phase": self.current_phase,
                 "state": [0,0,0,0,self.current_phase],
-                "action": torch.tensor([[0]])
+                "action": "initial"
             }
             self.last_decision_queue = {
                 'east_bound':0,
@@ -625,13 +630,13 @@ class SUMOEnvironment:
 
             while self.step_count < MAX_STEPS:
                 # Step through simulation
-                took_action, reward, action_result, info = self.step(episode, self.step_count)
+                took_action, reward, info = self.step(episode, self.step_count)
 
                 # Save episode info
-                if took_action and self.step_count > 0:
+                if took_action and info['action'] != 'initial':
                     episode_observed_step.append(info["step"]) 
                     episode_q_values.append(info["q_values"])
-                    episode_actions.append(action_result)
+                    episode_actions.append(info["action"])
                     episode_east_bound_queue.append(info["east_bound_queue"])
                     episode_south_bound_queue.append(info["south_bound_queue"])
                     current_phase_record.append(info["phase"])
