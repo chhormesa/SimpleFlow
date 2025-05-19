@@ -723,16 +723,25 @@ class SUMOEnvironment:
         plt.xlabel('Episode')
         plt.ylabel('Total Reward')
         self.data_saver.save_plot(fig_rewards, 'learning_curve')
+
+        # Sum q values of all episodes
+        fig_rewards = plt.figure(figsize=(20, 10))
+        plt.plot(self.all_episode_sum_q_values)
+        plt.title("Sum Q values over Episodes")
+        plt.xlabel("Episode")
+        plt.ylabel("Sum Q value")
+        self.data_saver.save_plot(fig_rewards, 'sum_q_value_curve')
         
         # Other plots
-        self.data_saver.save_plot(self.plot_total_delays(), 'total_delays')
-        self.data_saver.save_plot(self.plot_queue_lengths(), 'queue_lengths')
-        self.data_saver.save_plot(self.plot_q_value(), 'q_values_selected_episodes')
         self.data_saver.save_plot(self.plot_q_values(), 'q_values_all_episodes')
-        
+        self.data_saver.save_plot(self.plot_q_value(), 'q_values_selected_episodes')
+        self.data_saver.save_plot(self.plot_queue_lengths(), 'queue_lengths')
+        self.data_saver.save_plot(self.plot_total_delays(), 'total_delays')
+
         # === Save Results ===
         print("Saved: debug_decision_log.csv")
         self._save_training_results()
+        
         return self.all_episode_sum_q_values, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_queue
 
     def plot_q_values(self):
@@ -844,7 +853,20 @@ class SUMOEnvironment:
         
         plt.tight_layout()
         return fig
-
+  
+    def plot_total_delays(self):
+        '''Plot total delay time per episode'''
+        fig = plt.figure(figsize=(20, 15))
+        ax = fig.add_subplot(111)
+        
+        ax.plot(self.all_episode_total_queue)
+        ax.set_title('Total Delay Time per Episode')
+        ax.set_xlabel('Episode')
+        ax.set_ylabel('Total Delay Time')
+        
+        plt.tight_layout()
+        return fig
+    
     def _save_training_results(self):
         # === Saving Waiting history by curve ===
         self.data_saver.save_data(self.waiting_time_history, 'waiting_time')
@@ -856,6 +878,7 @@ class SUMOEnvironment:
             'sum_queues': self.all_episode_total_queue
         })
         self.data_saver.save_data(rewards_df, 'rewards')
+
         # === Q-values per Decision ===
         q_values_data = []
         for episode, (q_values, steps) in enumerate(zip(self.q_value_history, self.all_episode_observed_step)):
@@ -880,27 +903,6 @@ class SUMOEnvironment:
             queue_data.append(episode_data)
         queue_df = pd.concat(queue_data, ignore_index=True)
         self.data_saver.save_data(queue_df, 'queue_history')
-
-        # Plot
-        fig_rewards = plt.figure(figsize=(20, 10))
-        plt.plot(self.all_episode_sum_q_values)
-        plt.title("Sum Q values over Episodes")
-        plt.xlabel("Episode")
-        plt.ylabel("Sum Q value")
-        self.data_saver.save_plot(fig_rewards, 'sum_q_value_curve')
-    
-    def plot_total_delays(self):
-        '''Plot total delay time per episode'''
-        fig = plt.figure(figsize=(20, 15))
-        ax = fig.add_subplot(111)
-        
-        ax.plot(self.all_episode_total_queue)
-        ax.set_title('Total Delay Time per Episode')
-        ax.set_xlabel('Episode')
-        ax.set_ylabel('Total Delay Time')
-        
-        plt.tight_layout()
-        return fig
 
 # Defined independently of the Environment class
 def run_model(model_number):
