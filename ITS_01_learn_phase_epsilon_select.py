@@ -734,8 +734,8 @@ class SUMOEnvironment:
         
         # Other plots
         self.data_saver.save_plot(self.plot_q_values(), 'q_values_all_episodes')
-        self.data_saver.save_plot(self.plot_q_value(), 'q_values_selected_episodes')
-        self.data_saver.save_plot(self.plot_queue_lengths(), 'queue_lengths_selected_episodes')
+        self.data_saver.save_plot(self.plot_q_value_selected_ep(), 'q_values_selected_episodes')
+        self.data_saver.save_plot(self.plot_queue_lengths_selected_ep(), 'queue_lengths_selected_episodes')
         self.data_saver.save_plot(self.plot_total_delays(), 'total_delays')
 
         # === Save Results ===
@@ -758,9 +758,7 @@ class SUMOEnvironment:
         
         # Generates x-axis values ​​(including episode and step information)
         x = np.arange(total_steps)
-        episodes = x // self.config['MAX_STEPS']
-        steps = x % self.config['MAX_STEPS']
-        
+
         # Plot by behavior
         action_labels = ['0:Keep', '1:Switch']
         for i in range(2):
@@ -770,19 +768,11 @@ class SUMOEnvironment:
         ax.set_xlabel('Total Steps')
         ax.set_ylabel('Q-value')
         ax.legend()
-        
-        # Sets the tick to the first step of the specified episode.
-        tick_episodes = [0, 49] + list(range(99, self.config['NUM_EPISODES'], 50))
-        tick_locations = [ep * self.config['MAX_STEPS'] for ep in tick_episodes]
-        
-        ax.set_xticks(tick_locations)
-        ax.set_xticklabels([f'Ep {ep}, Step 0' for ep in tick_episodes], rotation=45, ha='right')
-        
-        plt.tight_layout()
-        
+
+        plt.tight_layout()        
         return fig
 
-    def plot_q_value(self):
+    def plot_q_value_selected_ep(self):
         '''Output a graph of the output Q value transition in a specific episode'''
         fig = plt.figure(figsize=(20, 15))
         action_labels = ['0:Keep', '1:Switch']
@@ -800,7 +790,7 @@ class SUMOEnvironment:
         plt.tight_layout()
         return fig
 
-    def plot_queue_lengths(self):
+    def plot_queue_lengths_selected_ep(self):
         '''Print graphs of queue transitions, selected lanes, and action timings for a given episode'''
         fig = plt.figure(figsize=(20, 15))
         queue_labels = ['queue (route_east_bound)', 'queue (route_north_bound)']
