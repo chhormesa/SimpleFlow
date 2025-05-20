@@ -112,13 +112,13 @@ class DataSaver:
         print(f"Saved network structure to {structure_path}")
 
     def save_plot(self, fig, filename):
-        path = os.path.join(self.output_dir, f"{filename}.pdf")
+        path = os.path.join(self.output_dir, f"model{model_num}_{filename}.pdf")
         fig.savefig(path)
         plt.close(fig)
         print(f"Saved plot to {path}")
 
     def save_data(self, data, filename):
-        path = os.path.join(self.output_dir, f"{filename}.csv")
+        path = os.path.join(self.output_dir, f"model{model_num}_{filename}.csv")
         if isinstance(data, pd.DataFrame):
             data.to_csv(path, index=False)
         else:
@@ -468,27 +468,28 @@ class SUMOEnvironment:
         action = torch.tensor([[0]])  # default keep
         took_action = False
         pending = self.pending_transition
-        
+
         # === Only decide if at decision step ===
         if self.step_count >= self.next_decision_step:
-            if self.state_size == 5:
-                self.last_decision_queue['east_bound'] = self.state[0]
-                self.last_decision_queue['south_bound'] = self.state[1]
+            self.last_decision_queue['east_bound'] = self.state[0]
+            self.last_decision_queue['south_bound'] = self.state[1]
 
-            action = self.agent.get_action(state_tensor, episode)
+            action_tensor = self.agent.get_action(state_tensor, episode)
+            action = action_tensor.item()
             took_action = True
 
-            self.agent.memorize(torch.FloatTensor(pending["state"]).unsqueeze(0), 
-                                pending["action"],  
-                                torch.FloatTensor(self.state).unsqueeze(0), 
-                                torch.FloatTensor([-self.state[0]-self.state[1]]))
-            self.agent.update_q_function()
+            if pending['action'] != "initial":
+                self.agent.memorize(torch.FloatTensor(pending["state"]).unsqueeze(0), 
+                                    torch.LongTensor([[pending["action"]]]),  
+                                    torch.FloatTensor(self.state).unsqueeze(0), 
+                                    torch.FloatTensor([-self.state[0]-self.state[1]]))
+                self.agent.update_q_function()
 
-            if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  # Only log every 100 episodes
+            if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  
                 self.state_visit_counter[tuple(pending["state"])] += 1
                 self.decision_log.append({
                     "episode": episode,
-                    "step": pending["step"],
+                    "step":pending["step"],
                     "state": pending["state"],
                     "phase": pending["phase"],
                     "action": "SWITCH" if pending["action"] == 1 else "KEEP",
@@ -508,7 +509,7 @@ class SUMOEnvironment:
                 "phase": MAP_PHASE[self.current_phase]
             }
 
-            if action.item() == 1:  # SWITCH
+            if action == 1:  # SWITCH
                 # Yellow phase
                 traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase + self.yellow_phase)
                 for _ in range(self.lost_time_steps):
@@ -626,23 +627,96 @@ class SUMOEnvironment:
 
             while self.step_count < MAX_STEPS:
                 # Step through simulation
-                took_action, reward, action_result, info = self.step(episode, self.step_count)
-                print(took_action, reward, action_result, info)
+                state_tensor = torch.FloatTensor(self.state).unsqueeze(0)
+                q_values = self.agent.get_q_values(state_tensor)
+                action = torch.tensor([[0]])  # default keep
+                pending = self.pending_transition
 
-                # Save episode info
-                if took_action and self.step_count > 0:
-                    episode_observed_step.append(info["step"]) 
-                    episode_q_values.append(info["q_values"])
-                    episode_actions.append(action_result)
-                    episode_east_bound_queue.append(info["east_bound_queue"])
-                    episode_south_bound_queue.append(info["south_bound_queue"])
-                    current_phase_record.append(info["phase"])
-                    self.episode_total_queue += info['east_bound_queue'] + info['south_bound_queue']
-                    self.reward_history.append({
+                # === Only decide if at decision step ===
+                if self.step_count >= self.next_decision_step:
+                    self.last_decision_queue['east_bound'] = self.state[0]
+                    self.last_decision_queue['south_bound'] = self.state[1]
+
+                    action_tensor = self.agent.get_action(state_tensor, episode)
+                    action = action_tensor.item()
+
+                    if pending['action'] != "initial":
+                        self.agent.memorize(torch.FloatTensor(pending["state"]).unsqueeze(0), 
+                                            torch.LongTensor([[pending["action"]]]),  
+                                            torch.FloatTensor(self.state).unsqueeze(0), 
+                                            torch.FloatTensor([-self.state[0]-self.state[1]]))
+                        self.agent.update_q_function()
+                                        
+                        episode_observed_step.append(self.step_count)
+                        episode_q_values.append(q_values[0])
+                        episode_actions.append(action)
+                        episode_east_bound_queue.append(self.state[0])
+                        episode_south_bound_queue.append(self.state[1])
+                        current_phase_record.append(MAP_PHASE[traci.trafficlight.getPhase(self.config["TRAFFIC_LIGHT_NODE"])]) 
+                        self.episode_total_queue += self.state[0] + self.state[1]
+                        self.reward_history.append({
+                            "step": self.step_count,
+                            "reward": self.state[0] + self.state[1]
+                        })
+                        total_reward += self.state[0] + self.state[1]
+
+                    if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  
+                        self.state_visit_counter[tuple(pending["state"])] += 1
+                        self.decision_log.append({
+                            "episode": episode,
+                            "step":pending["step"],
+                            "state": pending["state"],
+                            "phase": pending["phase"],
+                            "action": "SWITCH" if pending["action"] == 1 else "KEEP",
+                            "record_step": self.step_count,
+                            "next_state": self.state,
+                            "reward": -self.state[0]-self.state[1],
+                            "current_phase": MAP_PHASE[self.current_phase],
+                            "next_switch": traci.trafficlight.getNextSwitch(self.config["TRAFFIC_LIGHT_NODE"]),
+                            "q_keep": q_values[0][0].item(),
+                            "q_switch": q_values[0][1].item()
+                        })
+
+                    self.pending_transition = {
                         "step": self.step_count,
-                        "reward": reward
-                    })
-                    total_reward += reward
+                        "state": self.state,
+                        "action": action,
+                        "phase": MAP_PHASE[self.current_phase]
+                    }
+
+                    if action == 1:  # SWITCH
+                        # Yellow phase
+                        traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase + self.yellow_phase)
+                        for _ in range(self.lost_time_steps):
+                            traci.simulationStep()
+                            self.step_count += 1
+                            self.record_veh(self.step_count)
+                            self._update_state(self.step_count)
+                        episode_observed_step.append(self.step_count)
+                        episode_q_values.append(q_values[0])
+                        episode_actions.append('L')
+                        episode_east_bound_queue.append(self.state[0])
+                        episode_south_bound_queue.append(self.state[1])
+                        current_phase_record.append('Yellow') 
+                        self.episode_total_queue += self.state[0] + self.state[1]
+
+                        # Next green phase
+                        self.current_phase_index = (self.current_phase_index + 1) % len(self.green_phases)
+                        self.current_phase = self.green_phases[self.current_phase_index]
+                        # traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
+                        
+                        self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
+                    else:  # KEEP
+                        traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
+                        self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
+                else:
+                    pass
+
+                # Continue normal step (either just stepped or after switching)
+                traci.simulationStep()
+                self.step_count += 1
+                self.record_veh(self.step_count)
+                self._update_state(self.step_count)
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -712,52 +786,6 @@ class SUMOEnvironment:
 
         print("Training finished.")
 
-        self.data_saver.save_data(self.waiting_time_history, 'waiting_time')
-
-        # Save reward data
-        rewards_df = pd.DataFrame({
-            'episode': range(NUM_EPISODES),
-            'total_reward': self.total_rewards,
-            'total_delay': self.all_episode_total_queue
-        })
-        self.data_saver.save_data(rewards_df, 'rewards')
-        
-        # Save Q-value history
-        q_values_data = []
-        for episode, q_values in enumerate(self.q_value_history):
-            episode_data = pd.DataFrame(q_values, columns=['Q_keep', 'Q_switch'])
-            episode_data['episode'] = episode
-            episode_data['step'] = range(len(q_values))
-            q_values_data.append(episode_data)
-        q_values_df = pd.concat(q_values_data, ignore_index=True)
-        self.data_saver.save_data(q_values_df, 'q_values')
-        
-        # Save queue data
-        queue_data = []
-        for episode in range(len(self.east_bound_queue_history)):
-            # Use the length of left_queue_history (should be episode + 1)
-            episode_length = len(self.east_bound_queue_history[episode])
-            
-            # Add 'initial' to align the action list to length (episode + 1)
-            actions = self.all_episode_action_results[episode]
-            
-            # current_lanes should also be of length (episode + 1)
-            current_lanes = self.all_episode_current_lanes[episode]
-            
-            # Create DataFrame (all should have the same length)
-            episode_data = pd.DataFrame({
-                'queue (route_eb)': self.east_bound_queue_history[episode], # Length: episode + 1
-                'queue (route_nb)': self.south_bound_queue_history[episode],  # Length: episode + 1
-                'current_lane': current_lanes,  # Length: episode + 1
-                'action': actions,  # Length: episode + 1
-                'episode': ['initial' if i == 0 else episode for i in range(episode_length)],  # Add initial
-                'step': ['initial' if i == 0 else i-1 for i in range(episode_length)]  # Add initial
-            })
-            queue_data.append(episode_data)
-
-        queue_df = pd.concat(queue_data, ignore_index=True)
-        self.data_saver.save_data(queue_df, 'queue_history')
-
         # Save plots
         # Learning curve
         fig_rewards = plt.figure(figsize=(20, 15))
@@ -765,22 +793,26 @@ class SUMOEnvironment:
         plt.title('Changes in Total Rewards')
         plt.xlabel('Episode')
         plt.ylabel('Total Reward')
-        self.data_saver.save_plot(fig_rewards, 'learning_curve')
+        self.data_saver.save_plot(fig_rewards, 'learning_curve (total_reward)')
+
+        # Sum q values of all episodes
+        fig_rewards = plt.figure(figsize=(20, 10))
+        plt.plot(self.all_episode_sum_q_values)
+        plt.title("Sum Q values over Episodes")
+        plt.xlabel("Episode")
+        plt.ylabel("Sum Q value")
+        self.data_saver.save_plot(fig_rewards, 'sum_q_value_curve')
         
         # Other plots
+        self.data_saver.save_plot(self.plot_q_values(), 'q_values_all_episodes')
+        self.data_saver.save_plot(self.plot_q_value_selected_ep(), 'q_values_selected_episodes')
+        self.data_saver.save_plot(self.plot_queue_lengths_selected_ep(), 'queue_lengths_selected_episodes')
         self.data_saver.save_plot(self.plot_total_delays(), 'total_delays')
-        self.data_saver.save_plot(self.plot_queue_lengths(), 'queue_lengths')
-        self.data_saver.save_plot(self.plot_q_value(), 'q_values_selected_episodes')
-        q_values_fig = self.plot_q_values()
-        self.data_saver.save_plot(q_values_fig, 'q_values_all_episodes')
-        
 
         # === Save Results ===
-        waiting_time_df = pd.DataFrame(self.waiting_time_history)
-        waiting_time_df.to_csv(os.path.join(episode_dir, f"waiting_time_history.csv"), index=False)
-
         print("Saved: debug_decision_log.csv")
-        self._save_training_results(self.all_episode_sum_q_values)
+        self._save_training_results()
+
         return self.all_episode_sum_q_values, self.all_episode_action_results, [], self.all_episode_action_results, self.all_episode_total_queue
 
     def plot_q_values(self):
@@ -797,9 +829,7 @@ class SUMOEnvironment:
         
         # Generates x-axis values ​​(including episode and step information)
         x = np.arange(total_steps)
-        episodes = x // self.config['MAX_STEPS']
-        steps = x % self.config['MAX_STEPS']
-        
+
         # Plot by behavior
         action_labels = ['0:Keep', '1:Switch']
         for i in range(2):
@@ -809,12 +839,11 @@ class SUMOEnvironment:
         ax.set_xlabel('Total Steps')
         ax.set_ylabel('Q-value')
         ax.legend()
-        
-        plt.tight_layout()
-        
+
+        plt.tight_layout()        
         return fig
 
-    def plot_q_value(self):
+    def plot_q_value_selected_ep(self):
         '''Output a graph of the output Q value transition in a specific episode'''
         fig = plt.figure(figsize=(20, 15))
         action_labels = ['0:Keep', '1:Switch']
@@ -832,32 +861,32 @@ class SUMOEnvironment:
         plt.tight_layout()
         return fig
 
-    def plot_queue_lengths(self):
+    def plot_queue_lengths_selected_ep(self):
         '''Print graphs of queue transitions, selected lanes, and action timings for a given episode'''
         fig = plt.figure(figsize=(20, 15))
         queue_labels = ['queue (route_east_bound)', 'queue (route_north_bound)']
         for i, episode in enumerate(self.episodes_to_plot):
             if episode < len(self.east_bound_queue_history):
                 ax = fig.add_subplot(len(self.episodes_to_plot), 1, i+1)
-                queue_steps = range(len(self.east_bound_queue_history[episode]))
-                steps = range(len(self.east_bound_queue_history[episode])-1)
+                observed_step = self.all_episode_observed_step[episode]
                 
                 # Plot queue lengths
-                ax.plot(queue_steps, self.east_bound_queue_history[episode], label=queue_labels[0])
-                ax.plot(queue_steps, self.south_bound_queue_history[episode], label=queue_labels[1])
+                ax.plot(observed_step, self.east_bound_queue_history[episode], label=queue_labels[0])
+                ax.plot(observed_step, self.south_bound_queue_history[episode], label=queue_labels[1])
                 
                 # Fill selected lane
                 selected_lane = self.all_episode_current_lanes[episode]
-                for j in range(1, len(steps)+1):
+
+                for j, step in enumerate(observed_step):
                     if selected_lane[j] == 0:
-                        ax.axvspan(j-1, j, facecolor='blue', alpha=0.1, linewidth=0)
+                        ax.axvspan(step - 5, step, facecolor='blue', alpha=0.1, linewidth=0)
                     else:
-                        ax.axvspan(j-1, j, facecolor='red', alpha=0.1, linewidth=0)
+                        ax.axvspan(step - 5, step, facecolor='red', alpha=0.1, linewidth=0)
                 
                 # Show 'S' and 'L' actions
                 for step, action in enumerate(self.all_episode_action_results[episode]):
                     if action in ['S', 'L']:
-                        ax.axvspan(step, step+1, facecolor='grey', alpha=0.6, linewidth=0)
+                        ax.axvspan(observed_step[step] - 5, observed_step[step], facecolor='grey', alpha=0.6, linewidth=0)
                 
                 # Dummy plot for legend
                 ax.plot([], [], color='blue', alpha=0.1, linewidth=10, label='route_we selected')
@@ -868,28 +897,32 @@ class SUMOEnvironment:
                 ax.set_xlabel('Step')
                 ax.set_ylabel('Queue length / Current lane')
                 ax.legend()
-                ax.set_xlim(0, len(steps))
+                ax.set_xlim(0, self.config['MAX_STEPS'])
                 ax.set_ylim(-0.5, max(max(self.east_bound_queue_history[episode]), max(self.south_bound_queue_history[episode])) + 0.5)
         plt.tight_layout()
         return fig
-
-    def plot_total_queues(self):
-        '''Output a graph of the total queues'''
+ 
+    def plot_total_delays(self):
+        '''Plot total delay time per episode'''
         fig = plt.figure(figsize=(20, 15))
         ax = fig.add_subplot(111)
         
         ax.plot(self.all_episode_total_queue)
-        ax.set_title('Total Queues per Episode')
+        ax.set_title('Total Delay Time per Episode')
         ax.set_xlabel('Episode')
-        ax.set_ylabel('Total Queues')
+        ax.set_ylabel('Total Delay Time (Sum of queue lengths)')
         
         plt.tight_layout()
         return fig
+    
+    def _save_training_results(self):
+        # === Saving Waiting history by curve ===
+        self.data_saver.save_data(self.waiting_time_history, 'waiting_time')
 
-    def _save_training_results(self, all_episode_sum_q_values):
+        # === Sum Q value and Sum queues per Decision ===
         rewards_df = pd.DataFrame({
-            'episode': range(len(all_episode_sum_q_values)),
-            'sum_q_values': all_episode_sum_q_values,
+            'episode': range(len(self.all_episode_sum_q_values)),
+            'sum_q_values': self.all_episode_sum_q_values,
             'sum_queues': self.all_episode_total_queue
         })
         self.data_saver.save_data(rewards_df, 'rewards')
@@ -903,13 +936,13 @@ class SUMOEnvironment:
             q_values_data.append(episode_data)
         q_values_df = pd.concat(q_values_data, ignore_index=True)
         self.data_saver.save_data(q_values_df, 'q_values')
-
+        
         # === Queue and Actions per Decision ===
         queue_data = []
         for episode, steps in enumerate(self.all_episode_observed_step):
             episode_data = pd.DataFrame({
-                'queue_left': self.east_bound_queue_history[episode],
-                'queue_right': self.south_bound_queue_history[episode],
+                'queue_eb': self.east_bound_queue_history[episode],
+                'queue_sb': self.south_bound_queue_history[episode],
                 'current_phase': self.all_episode_current_lanes[episode],
                 'action': self.all_episode_action_results[episode],
                 'episode': episode,
@@ -918,27 +951,6 @@ class SUMOEnvironment:
             queue_data.append(episode_data)
         queue_df = pd.concat(queue_data, ignore_index=True)
         self.data_saver.save_data(queue_df, 'queue_history')
-
-        # Plot
-        fig_rewards = plt.figure(figsize=(20, 10))
-        plt.plot(all_episode_sum_q_values)
-        plt.title("Sum Q values over Episodes")
-        plt.xlabel("Episode")
-        plt.ylabel("Sum Q value")
-        self.data_saver.save_plot(fig_rewards, 'learning_curve')
-    
-    def plot_total_delays(self):
-        '''Plot total delay time per episode'''
-        fig = plt.figure(figsize=(20, 15))
-        ax = fig.add_subplot(111)
-        
-        ax.plot(self.all_episode_total_queue)
-        ax.set_title('Total Delay Time per Episode')
-        ax.set_xlabel('Episode')
-        ax.set_ylabel('Total Delay Time')
-        
-        plt.tight_layout()
-        return fig
 
 # Defined independently of the Environment class
 def run_model(model_number):
