@@ -630,22 +630,96 @@ class SUMOEnvironment:
 
             while self.step_count < MAX_STEPS:
                 # Step through simulation
-                took_action, reward, info = self.step(episode, self.step_count)
+                state_tensor = torch.FloatTensor(self.state).unsqueeze(0)
+                q_values = self.agent.get_q_values(state_tensor)
+                action = torch.tensor([[0]])  # default keep
+                pending = self.pending_transition
 
-                # Save episode info
-                if took_action and info['action'] != 'initial':
-                    episode_observed_step.append(info["step"]) 
-                    episode_q_values.append(info["q_values"])
-                    episode_actions.append(info["action"])
-                    episode_east_bound_queue.append(info["east_bound_queue"])
-                    episode_south_bound_queue.append(info["south_bound_queue"])
-                    current_phase_record.append(info["phase"])
-                    self.episode_total_queue += info['east_bound_queue'] + info['south_bound_queue']
-                    self.reward_history.append({
+                # === Only decide if at decision step ===
+                if self.step_count >= self.next_decision_step:
+                    self.last_decision_queue['east_bound'] = self.state[0]
+                    self.last_decision_queue['south_bound'] = self.state[1]
+
+                    action_tensor = self.agent.get_action(state_tensor, episode)
+                    action = action_tensor.item()
+
+                    if pending['action'] != "initial":
+                        self.agent.memorize(torch.FloatTensor(pending["state"]).unsqueeze(0), 
+                                            torch.LongTensor([[pending["action"]]]),  
+                                            torch.FloatTensor(self.state).unsqueeze(0), 
+                                            torch.FloatTensor([-self.state[0]-self.state[1]]))
+                        self.agent.update_q_function()
+                                        
+                        episode_observed_step.append(self.step_count)
+                        episode_q_values.append(q_values[0])
+                        episode_actions.append(action)
+                        episode_east_bound_queue.append(self.state[0])
+                        episode_south_bound_queue.append(self.state[1])
+                        current_phase_record.append(MAP_PHASE[traci.trafficlight.getPhase(self.config["TRAFFIC_LIGHT_NODE"])]) 
+                        self.episode_total_queue += self.state[0] + self.state[1]
+                        self.reward_history.append({
+                            "step": self.step_count,
+                            "reward": self.state[0] + self.state[1]
+                        })
+                        total_reward += self.state[0] + self.state[1]
+
+                    if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  
+                        self.state_visit_counter[tuple(pending["state"])] += 1
+                        self.decision_log.append({
+                            "episode": episode,
+                            "step":pending["step"],
+                            "state": pending["state"],
+                            "phase": pending["phase"],
+                            "action": "SWITCH" if pending["action"] == 1 else "KEEP",
+                            "record_step": self.step_count,
+                            "next_state": self.state,
+                            "reward": -self.state[0]-self.state[1],
+                            "current_phase": MAP_PHASE[self.current_phase],
+                            "next_switch": traci.trafficlight.getNextSwitch(self.config["TRAFFIC_LIGHT_NODE"]),
+                            "q_keep": q_values[0][0].item(),
+                            "q_switch": q_values[0][1].item()
+                        })
+
+                    self.pending_transition = {
                         "step": self.step_count,
-                        "reward": reward
-                    })
-                    total_reward += reward
+                        "state": self.state,
+                        "action": action,
+                        "phase": MAP_PHASE[self.current_phase]
+                    }
+
+                    if action == 1:  # SWITCH
+                        # Yellow phase
+                        traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase + self.yellow_phase)
+                        for _ in range(self.lost_time_steps):
+                            traci.simulationStep()
+                            self.step_count += 1
+                            self.record_veh(self.step_count)
+                            self._update_state(self.step_count)
+                        episode_observed_step.append(self.step_count)
+                        episode_q_values.append(q_values[0])
+                        episode_actions.append('L')
+                        episode_east_bound_queue.append(self.state[0])
+                        episode_south_bound_queue.append(self.state[1])
+                        current_phase_record.append('Yellow') 
+                        self.episode_total_queue += self.state[0] + self.state[1]
+
+                        # Next green phase
+                        self.current_phase_index = (self.current_phase_index + 1) % len(self.green_phases)
+                        self.current_phase = self.green_phases[self.current_phase_index]
+                        # traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
+                        
+                        self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
+                    else:  # KEEP
+                        traci.trafficlight.setPhase(self.config["TRAFFIC_LIGHT_NODE"], self.current_phase)
+                        self.next_decision_step = self.step_count + self.config["DECISION_STEP"]
+                else:
+                    pass
+
+                # Continue normal step (either just stepped or after switching)
+                traci.simulationStep()
+                self.step_count += 1
+                self.record_veh(self.step_count)
+                self._update_state(self.step_count)
 
                 if traci.vehicle.getIDCount() == 0:
                     # No vehicles left, end episode
@@ -797,25 +871,25 @@ class SUMOEnvironment:
         for i, episode in enumerate(self.episodes_to_plot):
             if episode < len(self.east_bound_queue_history):
                 ax = fig.add_subplot(len(self.episodes_to_plot), 1, i+1)
-                queue_steps = range(len(self.east_bound_queue_history[episode]))
-                steps = range(len(self.east_bound_queue_history[episode])-1)
+                observed_step = self.all_episode_observed_step[episode]
                 
                 # Plot queue lengths
-                ax.plot(queue_steps, self.east_bound_queue_history[episode], label=queue_labels[0])
-                ax.plot(queue_steps, self.south_bound_queue_history[episode], label=queue_labels[1])
+                ax.plot(observed_step, self.east_bound_queue_history[episode], label=queue_labels[0])
+                ax.plot(observed_step, self.south_bound_queue_history[episode], label=queue_labels[1])
                 
                 # Fill selected lane
                 selected_lane = self.all_episode_current_lanes[episode]
-                for j in range(1, len(steps)+1):
+
+                for j, step in enumerate(observed_step):
                     if selected_lane[j] == 0:
-                        ax.axvspan(j-1, j, facecolor='blue', alpha=0.1, linewidth=0)
+                        ax.axvspan(step - 5, step, facecolor='blue', alpha=0.1, linewidth=0)
                     else:
-                        ax.axvspan(j-1, j, facecolor='red', alpha=0.1, linewidth=0)
+                        ax.axvspan(step - 5, step, facecolor='red', alpha=0.1, linewidth=0)
                 
                 # Show 'S' and 'L' actions
                 for step, action in enumerate(self.all_episode_action_results[episode]):
                     if action in ['S', 'L']:
-                        ax.axvspan(step, step+1, facecolor='grey', alpha=0.6, linewidth=0)
+                        ax.axvspan(observed_step[step] - 5, observed_step[step], facecolor='grey', alpha=0.6, linewidth=0)
                 
                 # Dummy plot for legend
                 ax.plot([], [], color='blue', alpha=0.1, linewidth=10, label='route_we selected')
@@ -826,7 +900,7 @@ class SUMOEnvironment:
                 ax.set_xlabel('Step')
                 ax.set_ylabel('Queue length / Current lane')
                 ax.legend()
-                ax.set_xlim(0, len(steps))
+                ax.set_xlim(0, self.config['MAX_STEPS'])
                 ax.set_ylim(-0.5, max(max(self.east_bound_queue_history[episode]), max(self.south_bound_queue_history[episode])) + 0.5)
         plt.tight_layout()
         return fig
@@ -870,8 +944,8 @@ class SUMOEnvironment:
         queue_data = []
         for episode, steps in enumerate(self.all_episode_observed_step):
             episode_data = pd.DataFrame({
-                'queue_left': self.east_bound_queue_history[episode],
-                'queue_right': self.south_bound_queue_history[episode],
+                'queue_eb': self.east_bound_queue_history[episode],
+                'queue_sb': self.south_bound_queue_history[episode],
                 'current_phase': self.all_episode_current_lanes[episode],
                 'action': self.all_episode_action_results[episode],
                 'episode': episode,
