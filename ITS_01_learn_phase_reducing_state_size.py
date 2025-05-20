@@ -64,6 +64,7 @@ COMMON_CONFIG = {
     "EPSILON": 1,                # exploration rate for ε-greedy
     "GAMMA": 0.95,
     "EPSILON_TYPE": 'yoshizawa',
+    "RANDOM_SEED": False
 }
 
 MODEL_CONFIGS = {
@@ -73,6 +74,14 @@ MODEL_CONFIGS = {
     262: {
     "SUMO_MODEL": 'hl'
 },
+    266: {
+    "SUMO_MODEL": "hh-poisson",
+    "RANDOM_SEED": True
+},
+    278: {
+    "SUMO_MODEL": "hl-poisson",
+    "RANDOM_SEED": True
+}
 }
 
 # Options for ε-greedy function
@@ -82,7 +91,7 @@ EPSILON_FUNCTIONS = {
     'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)      
 }
 
-MODELS_TO_RUN = [ 262 ] 
+MODELS_TO_RUN = [ 250, 262, 266, 278 ] 
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
@@ -576,6 +585,9 @@ class SUMOEnvironment:
                 "--duration-log.statistics",
                 "--time-to-teleport", "-1"
             ]
+
+            if self.config["RANDOM_SEED"]:
+                sumo_cmd += ["--random"]
 
             if episode % OBSERVE_DECISION == 0:
                 stats_output_path = os.path.join(self.data_saver.output_dir, f"stats_summary_{episode}.xml")
