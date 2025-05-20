@@ -44,9 +44,19 @@ SUMO_CONFIG = {
         "SUMOCFG_PATH": f"./{SUMO_PATH}/hh",
         "FREE_FLOW_TIME": float(600/(FREE_FLOW_SPEED*STEP))
     },
-    'hl': {
+    'hh-poisson': {
+        "Description": "High-High traffic flow with Poisson",
+        "SUMOCFG_PATH": f"./{SUMO_PATH}/hh-poisson",
+        "FREE_FLOW_TIME": float(600/(FREE_FLOW_SPEED*STEP))
+    },
+    'll': {
         "Description": "High-Low traffic flow",
-        "SUMOCFG_PATH": f"./{SUMO_PATH}/hl",
+        "SUMOCFG_PATH": f"./{SUMO_PATH}/ll",
+        "FREE_FLOW_TIME": float(600/(FREE_FLOW_SPEED*STEP))
+    },
+    'll-poisson': {
+        "Description": "High-Low traffic flow with poisson",
+        "SUMOCFG_PATH": f"./{SUMO_PATH}/ll-poisson",
         "FREE_FLOW_TIME": float(600/(FREE_FLOW_SPEED*STEP))
     }
 }
