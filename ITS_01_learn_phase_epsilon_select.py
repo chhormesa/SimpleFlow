@@ -571,7 +571,6 @@ class SUMOEnvironment:
                 SUMO_BINARY,
                 "-c", f"{self.config['SUMOCFG_PATH']}/{self.config['SUMO_FILE']}",
                 "--step-length", str(self.config.get("STEP", "0.1")),
-                "--random",
                 "--start",
                 "--quit-on-end",
                 "--delay", "0",
@@ -659,9 +658,9 @@ class SUMOEnvironment:
                         self.episode_total_queue += self.state[0] + self.state[1]
                         self.reward_history.append({
                             "step": self.step_count,
-                            "reward": self.state[0] + self.state[1]
+                            "reward": -self.state[0] - self.state[1]
                         })
-                        total_reward += self.state[0] + self.state[1]
+                        total_reward -= self.state[0] - self.state[1]
 
                     if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  
                         self.state_visit_counter[tuple(pending["state"])] += 1

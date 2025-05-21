@@ -14,7 +14,7 @@ from scipy.interpolate import interp1d
 import traci
 os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 
-SUMO_BINARY='sumo'
+SUMO_BINARY='sumo-gui'
 SUMO_PATH = 'sumo'
 SUMO_MODEL = 'hh'
 
@@ -23,7 +23,7 @@ MAP_PHASE = {
     2: 1,
 }
 
-OBSERVE_DECISION = 10
+OBSERVE_DECISION = 200
 STEP = 1
 FREE_FLOW_SPEED = 12.59
 
@@ -63,8 +63,8 @@ SUMO_CONFIG = {
 
 COMMON_CONFIG = {
     "STEP": STEP,
-    'MAX_STEPS': int(1200/STEP),
-    'NUM_EPISODES': 100,
+    'MAX_STEPS': int(1251/STEP),
+    'NUM_EPISODES': 1001,
     'BATCH_SIZE': 20,
     'CAPACITY': 1000,
     "STATE_SIZE": 3,               # e.g., [east_bound_q, south_bound_q, current_phase]
@@ -82,14 +82,14 @@ MODEL_CONFIGS = {
     "SUMO_MODEL": 'hh'
 },
     262: {
-    "SUMO_MODEL": 'hl'
+    "SUMO_MODEL": 'll'
 },
     266: {
     "SUMO_MODEL": "hh-poisson",
     "RANDOM_SEED": True
 },
     278: {
-    "SUMO_MODEL": "hl-poisson",
+    "SUMO_MODEL": "ll-poisson",
     "RANDOM_SEED": True
 }
 }
@@ -101,7 +101,7 @@ EPSILON_FUNCTIONS = {
     'linear': lambda episode, num_episodes: 1 - (episode/num_episodes)      
 }
 
-MODELS_TO_RUN = [ 250, 262, 266, 278 ] 
+MODELS_TO_RUN = [ 250 ] 
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
@@ -587,7 +587,6 @@ class SUMOEnvironment:
                 SUMO_BINARY,
                 "-c", f"{self.config['SUMOCFG_PATH']}/{self.config['SUMO_FILE']}",
                 "--step-length", str(self.config.get("STEP", "0.1")),
-                "--random",
                 "--start",
                 "--quit-on-end",
                 "--delay", "0",
@@ -605,7 +604,6 @@ class SUMOEnvironment:
 
             traci.start(sumo_cmd)
 
-            self.state = [0]*self.state_size # Reset state
             self.episode_total_queue = 0
             self.step_count = 0
             self.next_decision_step = 0
@@ -636,6 +634,7 @@ class SUMOEnvironment:
             current_phase_record = []
             total_reward = 0 
             self.current_phase = traci.trafficlight.getPhase(self.config["TRAFFIC_LIGHT_NODE"])
+            self.state = [0]*(self.state_size - 1)+[MAP_PHASE[self.current_phase]]
             self.pending_transition = {
                 "step": 0,
                 "phase": MAP_PHASE[self.current_phase],
@@ -678,9 +677,9 @@ class SUMOEnvironment:
                         self.episode_total_queue += self.state[0] + self.state[1]
                         self.reward_history.append({
                             "step": self.step_count,
-                            "reward": self.state[0] + self.state[1]
+                            "reward": -self.state[0] - self.state[1]
                         })
-                        total_reward += self.state[0] + self.state[1]
+                        total_reward -= self.state[0] - self.state[1]
 
                     if episode % OBSERVE_DECISION == 0 and self.step_count != 0:  
                         self.state_visit_counter[tuple(pending["state"])] += 1
@@ -740,9 +739,9 @@ class SUMOEnvironment:
                 self.record_veh(self.step_count)
                 self._update_state(self.step_count)
 
-                if traci.vehicle.getIDCount() == 0:
-                    # No vehicles left, end episode
-                    break
+                # if traci.vehicle.getIDCount() == 0:
+                #     # No vehicles left, end episode
+                #     break
 
             # Close SUMO
             traci.close()
